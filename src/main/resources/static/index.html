@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>城市校园校车 · 乘车点名与临时改乘服务</title>
+<style>
+  :root{
+    --blue:#1f5fbf; --blue-d:#174a96; --bg:#f2f5fa; --card:#fff; --line:#e3e8f0;
+    --txt:#1d2b40; --muted:#6b7a90; --ok:#15803d; --warn:#b45309; --bad:#b91c1c; --purple:#6d28d9;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--txt);font-size:14px}
+  button{cursor:pointer;font-family:inherit}
+  input,select,textarea{font-family:inherit;font-size:13px;padding:7px 9px;border:1px solid #c6d0e0;border-radius:6px;background:#fff;color:var(--txt)}
+  input:focus,select:focus,textarea:focus{outline:2px solid #b8cdf5;border-color:var(--blue)}
+  .btn{border:none;border-radius:6px;padding:7px 14px;background:var(--blue);color:#fff;font-size:13px}
+  .btn:hover{background:var(--blue-d)}
+  .btn.ghost{background:#eef3fb;color:var(--blue);border:1px solid #c9d8f0}
+  .btn.ghost:hover{background:#dce8fa}
+  .btn.danger{background:#dc2626}.btn.danger:hover{background:#b91c1c}
+  .btn.ok{background:var(--ok)}.btn.ok:hover{background:#166534}
+  .btn.warn{background:#d97706}.btn.warn:hover{background:#b45309}
+  .btn.sm{padding:4px 9px;font-size:12px}
+  .btn[disabled]{opacity:.45;cursor:not-allowed}
+  .topbar{background:linear-gradient(120deg,#123d7a,#1f5fbf);color:#fff;padding:10px 22px;display:flex;align-items:center;gap:16px;position:sticky;top:0;z-index:20}
+  .topbar h1{font-size:17px;font-weight:600;white-space:nowrap}
+  .topbar .sub{font-size:12px;opacity:.8}
+  .topbar .sp{flex:1}
+  .who{font-size:13px;background:rgba(255,255,255,.15);padding:5px 12px;border-radius:20px}
+  .bell{position:relative;background:rgba(255,255,255,.15);border:none;color:#fff;width:36px;height:36px;border-radius:50%;font-size:17px}
+  .bell .dot{position:absolute;top:-3px;right:-3px;background:#ef4444;border-radius:10px;font-size:11px;padding:1px 5px;font-weight:700}
+  .wrap{max-width:1280px;margin:0 auto;padding:18px 22px 60px}
+  .tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:14px}
+  .tabs button{border:1px solid var(--line);background:#fff;padding:8px 16px;border-radius:8px 8px 0 0;color:var(--muted);font-size:13px}
+  .tabs button.on{background:var(--card);color:var(--blue);border-bottom:2px solid var(--blue);font-weight:600}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+  .card h3{font-size:15px;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+  .grid{display:grid;gap:14px}.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:900px){.g2,.g3,.g4{grid-template-columns:1fr}}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+  th{background:#f7f9fd;color:var(--muted);font-weight:600;white-space:nowrap}
+  tr:hover td{background:#f9fbff}
+  .tag{display:inline-block;padding:2px 8px;border-radius:11px;font-size:12px;white-space:nowrap}
+  .t-blue{background:#e7f0fe;color:#1d4ed8}.t-green{background:#dcfce7;color:#15803d}.t-red{background:#fee2e2;color:#b91c1c}
+  .t-amber{background:#fef3c7;color:#b45309}.t-gray{background:#eef1f5;color:#475569}.t-purple{background:#ede9fe;color:#6d28d9}
+  .muted{color:var(--muted)}.small{font-size:12px}.mono{font-family:ui-monospace,monospace}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+  .row label{color:var(--muted);font-size:12px;min-width:64px}
+  .kv{display:grid;grid-template-columns:96px 1fr;gap:4px 10px;font-size:13px}
+  .kv .k{color:var(--muted)}
+  /* login */
+  #login{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#10305f,#1f5fbf 60%,#3b82c4)}
+  .loginbox{background:#fff;border-radius:16px;padding:34px;width:400px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+  .loginbox h2{font-size:20px;margin-bottom:4px}.loginbox .slogan{color:var(--muted);font-size:13px;margin-bottom:20px}
+  .loginbox input{width:100%;margin-bottom:12px;padding:10px 12px}
+  .loginbox .btn{width:100%;padding:11px;font-size:15px}
+  .acc{margin-top:16px;border-top:1px dashed var(--line);padding-top:12px}
+  .acc .a{display:flex;justify-content:space-between;gap:6px;padding:6px 8px;border-radius:6px;font-size:12px;cursor:pointer}
+  .acc .a:hover{background:#eef3fb}
+  .acc .a b{font-weight:600}.acc .a span{color:var(--muted)}
+  .toast{position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:60;background:#111c2e;color:#fff;padding:10px 22px;border-radius:8px;font-size:13px;opacity:0;transition:.25s;pointer-events:none;max-width:80vw}
+  .toast.show{opacity:.95}.toast.err{background:#991b1b}.toast.ok{background:#166534}
+  /* drawer */
+  .drawer-mask{position:fixed;inset:0;background:rgba(10,20,40,.35);z-index:30;display:none}
+  .drawer{position:fixed;top:0;right:-440px;width:440px;max-width:92vw;height:100%;background:#fff;z-index:31;transition:right .25s;display:flex;flex-direction:column}
+  .drawer.open{right:0}.drawer-mask.open{display:block}
+  .drawer .dh{padding:15px 18px;border-bottom:1px solid var(--line);font-weight:600;display:flex;align-items:center}
+  .drawer .db{flex:1;overflow:auto;padding:12px 14px}
+  .n{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin-bottom:10px}
+  .n.unread{border-left:4px solid var(--blue);background:#f5f9ff}
+  .n .nt{font-weight:600;font-size:13px;margin-bottom:3px}.n .nc{font-size:12px;color:#374151;line-height:1.5}
+  .n .nf{display:flex;justify-content:space-between;margin-top:7px;font-size:11px;color:var(--muted)}
+  .modal-mask{position:fixed;inset:0;background:rgba(10,20,40,.4);z-index:40;display:none;align-items:center;justify-content:center}
+  .modal-mask.open{display:flex}
+  .modal{background:#fff;border-radius:12px;padding:22px;width:520px;max-width:94vw;max-height:88vh;overflow:auto}
+  .modal h3{margin-bottom:14px}.modal textarea{width:100%;min-height:64px;margin-bottom:10px}
+  .timeline{border-left:2px solid #dbe5f5;margin-left:6px;padding-left:14px;margin:8px 0}
+  .timeline .ti{position:relative;margin-bottom:12px;font-size:12.5px}
+  .timeline .ti::before{content:"";position:absolute;left:-21px;top:3px;width:9px;height:9px;border-radius:50%;background:var(--blue)}
+  .timeline .ti .tt{color:var(--muted);font-size:11px}
+  .stat{background:#f7f9fd;border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+  .stat .v{font-size:24px;font-weight:700;color:var(--blue)}.stat .l{font-size:12px;color:var(--muted)}
+  .care{color:var(--purple);font-weight:600}
+  .btns{display:flex;gap:6px;flex-wrap:wrap}
+  code{background:#eef1f5;padding:1px 5px;border-radius:4px;font-size:12px}
+</style>
+</head>
+<body>
+
+<!-- 登录 -->
+<div id="login">
+  <div class="loginbox">
+    <h2>🚌 校车乘车点名与临时改乘服务</h2>
+    <div class="slogan">点名 · 改乘 · 异常五方联动 · 通知回执 · 乘车档案</div>
+    <input id="li-user" placeholder="用户名" autocomplete="username">
+    <input id="li-pass" type="password" placeholder="密码" autocomplete="current-password">
+    <button class="btn" onclick="doLogin()">登 录</button>
+    <div class="acc" id="accounts"></div>
+  </div>
+</div>
+
+<!-- 主应用 -->
+<div id="app" style="display:none">
+  <div class="topbar">
+    <h1>🚌 城市校园校车服务平台</h1>
+    <span class="sub" id="today"></span>
+    <span class="sp"></span>
+    <span class="who" id="who"></span>
+    <button class="bell" onclick="openDrawer()">🔔<span class="dot" id="notif-dot" style="display:none">0</span></button>
+    <button class="btn ghost sm" onclick="loadAll()">刷新</button>
+    <button class="btn ghost sm" onclick="logout()">退出</button>
+  </div>
+  <div class="wrap">
+    <div class="tabs" id="tabs"></div>
+    <div id="panel"></div>
+  </div>
+</div>
+
+<!-- 通知抽屉 -->
+<div class="drawer-mask" id="drawer-mask" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <div class="dh">📬 通知回执 <span class="sp" style="flex:1"></span>
+    <button class="btn ghost sm" onclick="closeDrawer()">关闭</button></div>
+  <div class="db" id="notif-list"></div>
+</div>
+
+<!-- 通用弹窗 -->
+<div class="modal-mask" id="modal-mask">
+  <div class="modal" id="modal-body"></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const ROLE_NAME={ADMIN:'校车管理员',DRIVER:'司机',ATTENDANT:'随车安全员',TEACHER:'班主任',PARENT:'家长'};
+const CHANGE_NAME={NONE:'默认',LEAVE:'请假',CHANGE_BUS:'临时改乘',CHANGE_STOP:'改下车点',ALTERNATE_PICKUP:'他人代接'};
+const M_NAME={PLANNED:'待乘',BOARDED:'已上车',ABSENT_NO_SHOW:'未到',LATE:'迟到',TEMP_BOARDED:'临时上车',LEAVE:'请假',
+  ONBOARD:'已上车',DELIVERED:'已送达',NOT_BOARDED:'未上车',NO_PICKUP:'无人接(看护中)',WRONG_BUS:'上错车'};
+const INC_NAME={NOT_BOARDED:'未上车',WRONG_BUS:'上错车',NO_PICKUP:'下车点无人接',BUS_DELAY:'车辆延误',PICKUP_CHANGE:'临时变更接送人'};
+const ACCOUNTS=[
+ ['admin','admin123','周校长 · 校车管理员'],['anyi','att123','安一路 · 一号线安全员'],['liantai','att123','廉泰 · 二号线安全员'],
+ ['dli','driver123','李建国 · 一号线司机'],['wangshifu','driver123','王建国 · 二号线司机'],
+ ['teacher31','teacher123','王老师 · 三年级(1)班'],['zhangfu','parent123','张父 · 张小明的家长'],
+ ['limu','parent123','李母 · 李小华(特殊照护)的家长'],['wangma','parent123','王母'],['zhaoba','parent123','赵父'],['chenma','parent123','陈母']];
+
+let S=null; // 服务端引导数据
+const TABS={
+  PARENT:['child','我的孩子','req','我的申请','notif','通知回执'],
+  ATTENDANT:['pend','待确认申请','am','早晨点名','pm','放学点名','notif','通知回执'],
+  DRIVER:['bus','车辆与位置','notif','通知回执'],
+  TEACHER:['class','班级乘车','notif','通知回执'],
+  ADMIN:['facts','统一乘车事实','pend','申请审批','inc','异常事件','receipt','通知回执核对','archive','乘车档案','review','高发站点复盘']
+};
+let currentTab='child';
+
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function $(id){return document.getElementById(id);}
+function toast(msg,kind){const t=$('toast');t.textContent=msg;t.className='toast show '+(kind||'');setTimeout(()=>t.className='toast',2600);}
+
+async function api(path,opt){
+  opt=opt||{};opt.headers=Object.assign({'Content-Type':'application/json','X-User':S?.user?.username||''},opt.headers||{});
+  const r=await fetch('/api'+path,opt);
+  const j=await r.json().catch(()=>({success:false,message:'非 JSON 响应'}));
+  if(!r.ok||!j.success){throw new Error(j.message||('HTTP '+r.status));}
+  return j.data;
+}
+async function act(path,body){try{const d=await api(path,{method:'POST',body:body?JSON.stringify(body):'{}'});await loadAll();return d;}catch(e){toast(e.message,'err');throw e;}}
+
+function routeName(id){return S.routes.find(r=>r.id===id)?.name||id||'—';}
+function student(id){return S.students.find(s=>s.studentId===id||s.id===id);}
+function rideOf(sid){return S.facts.facts.find(f=>f.studentId===sid)?.ride;}
+function vehicleOfRoute(rid){return S.vehicles.find(v=>v.routeId===rid);}
+function factOf(sid){return S.facts.facts.find(f=>f.studentId===sid);}
+
+function mTag(st){
+  const map={PLANNED:'t-gray',BOARDED:'t-green',DELIVERED:'t-green',LEAVE:'t-gray',
+    ABSENT_NO_SHOW:'t-red',NOT_BOARDED:'t-red',NO_PICKUP:'t-red',WRONG_BUS:'t-red',
+    LATE:'t-amber',TEMP_BOARDED:'t-purple',ONBOARD:'t-blue'};
+  return `<span class="tag ${map[st]||'t-gray'}">${M_NAME[st]||st}</span>`;
+}
+function incTag(t){const map={NOT_BOARDED:'t-red',WRONG_BUS:'t-red',NO_PICKUP:'t-red',BUS_DELAY:'t-amber',PICKUP_CHANGE:'t-purple'};return `<span class="tag ${map[t]}">${INC_NAME[t]||t}</span>`;}
+function reqStatusTag(st){return st==='APPROVED'?'<span class="tag t-green">已通过</span>':st==='REJECTED'?'<span class="tag t-red">已驳回</span>':'<span class="tag t-amber">待安全员确认</span>';}
+
+// ---------- 登录 ----------
+function renderAccounts(){
+  $('accounts').innerHTML='<div class="small muted" style="margin-bottom:6px">演示账号（点击自动填充）</div>'+
+    ACCOUNTS.map(a=>`<div class="a" onclick="$('li-user').value='${a[0]}';$('li-pass').value='${a[1]}'"><b>${esc(a[2])}</b><span>${a[0]} / ${a[1]}</span></div>`).join('');
+}
+async function doLogin(){
+  try{
+    const u=await api('/login',{method:'POST',body:JSON.stringify({username:$('li-user').value,password:$('li-pass').value})});
+    localStorage.setItem('sb_user',u.username);
+    await boot(u.username);
+  }catch(e){toast(e.message,'err');}
+}
+async function boot(username){
+  const d=await api('/bootstrap',{headers:{'X-User':username}});
+  S=d;
+  $('login').style.display='none';$('app').style.display='block';
+  $('today').textContent='今天 '+S.facts.date;
+  $('who').textContent=`${S.user.name} · ${ROLE_NAME[S.user.role]}`;
+  currentTab=TABS[S.user.role][0];
+  renderTabs();renderAll();
+}
+function logout(){localStorage.removeItem('sb_user');location.reload();}
+
+// ---------- 框架 ----------
+function renderTabs(){
+  const tabs=TABS[S.user.role];let h='';
+  for(let i=0;i<tabs.length;i+=2){h+=`<button class="${currentTab===tabs[i]?'on':''}" onclick="switchTab('${tabs[i]}')">${tabs[i+1]}</button>`;}
+  $('tabs').innerHTML=h;
+}
+function switchTab(t){currentTab=t;renderTabs();renderAll();}
+async function loadAll(){
+  if(!S)return;
+  try{
+    const d=await api('/bootstrap');S=d;renderAll();
+  }catch(e){if(/未登录|登录态/.test(e.message)){logout();}else toast(e.message,'err');}
+}
+function renderAll(){
+  const un=S.notifications.filter(n=>!n.ack).length;
+  $('notif-dot').style.display=un?'inline-block':'none';$('notif-dot').textContent=un;
+  renderNotifs();
+  const fn={child:pChild,req:pReq,notif:pNotif,pend:pPend,am:pMorning,pm:pAfternoon,bus:pBus,class:pClass,facts:pFacts,inc:pIncidents,receipt:pReceipt,archive:pArchive,review:pReview};
+  $('panel').innerHTML=(fn[currentTab]||(()=>''))();
+}
+
+// ================= 家长 =================
+function pChild(){
+  const kids=S.students.filter(s=>S.user.scopeIds.includes(s.id));
+  return kids.map(s=>{
+    const f=factOf(s.id),r=f.ride,v=f.vehicle;
+    return `<div class="card">
+      <h3>👦 ${esc(s.name)} <span class="tag t-blue">${esc(s.className)}</span>
+        ${s.specialCare?'<span class="tag t-purple">需特殊照护</span>':''}
+        <span class="tag t-gray">学号 ${s.studentNo}</span></h3>
+      <div class="grid g4">
+        <div class="stat"><div class="l">默认线路</div><b>${esc(routeName(s.routeId))}</b></div>
+        <div class="stat"><div class="l">上/下车站点</div><b>${esc(s.defaultStop)}</b></div>
+        <div class="stat"><div class="l">默认接送人</div><b>${esc(s.pickupPerson)}</b><div class="small muted">${s.parentPhone}</div></div>
+        <div class="stat"><div class="l">今日变更</div><b>${CHANGE_NAME[r.changeType]}</b></div>
+      </div>
+      <div style="height:10px"></div>
+      <table>
+        <tr><th>早晨上车状态</th><th>放学乘车状态</th><th>实际线路/站点</th><th>车辆实时状态</th><th>家长确认</th></tr>
+        <tr><td>${mTag(r.morningStatus)}<div class="small muted">${r.morningMarkedAt||''}</div></td>
+        <td>${mTag(r.afternoonStatus)}<div class="small muted">${r.afternoonMarkedAt||''}</div></td>
+        <td>${esc(f.effectiveRouteName)}<div class="small muted">早 ${esc(f.morningStop)} / 晚 ${esc(f.afternoonStop)}${r.alternatePickupPerson?' / 代接:'+esc(r.alternatePickupPerson):''}</div></td>
+        <td>${v?`${esc(v.plate)} <span class="tag ${v.status==='DELAYED'?'t-red':'t-green'}">${v.status==='DELAYED'?'延误'+v.delayMinutes+'分':v.status==='ON_TIME'?'准点':v.status==='RUNNING'?'运行中':'已收车'}</span><div class="small muted">${esc(v.locationText||'')}</div>`:'—'}</td>
+        <td>${r.parentConfirmed?`<span class="tag t-green">已确认 ${r.parentConfirmed.slice(5,16)}</span>`:'<span class="tag t-gray">未确认</span>'}</td></tr>
+      </table>
+      <div style="height:12px"></div>
+      <h3>提交申请 / 留言</h3>
+      <div class="row">
+        <label>申请类型</label>
+        <select id="rtype" onchange="onReqType('${s.id}')">
+          <option value="LEAVE">请假</option>
+          <option value="CHANGE_BUS">临时改乘（换线路）</option>
+          <option value="CHANGE_STOP">改下车点（同线路）</option>
+          <option value="ALTERNATE_PICKUP">他人代接</option>
+        </select>
+      </div>
+      <div id="req-fields"><div class="row"><label>请假原因</label><input id="f-reason" style="width:420px" placeholder="必填，如：发烧就医"></div></div>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" onclick="submitReq('${s.id}')">提交申请（进入容量/座位/校规校验 → 安全员确认）</button>
+      </div>
+      <div style="height:10px"></div>
+      <div class="row">
+        <label>家长备注</label>
+        <input id="note-${s.id}" style="width:380px" placeholder="如：今天孩子有点咳嗽，麻烦照看下" value="${esc(r.parentNote)}">
+        <button class="btn ghost sm" onclick="act('/parent/note',{studentId:'${s.id}',note:$('note-${s.id}').value}).then(()=>toast('备注已同步安全员/班主任','ok'))">同步备注</button>
+        <span style="flex:1"></span>
+        <button class="btn ok" onclick="act('/parent/confirm',{studentId:'${s.id}'}).then(()=>toast('已确认孩子安全接到','ok'))">✅ 确认孩子已接到</button>
+        <button class="btn warn" onclick="pickupChange('${s.id}')">⚠ 临时变更接送人</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+function onReqType(sid){
+  const t=$('rtype').value,s=student(sid),r=rideOf(sid);
+  const otherRoutes=S.routes.filter(x=>x.id!==(r.changeType==='CHANGE_BUS'?r.routeId:r.routeId));
+  let h='';
+  if(t==='LEAVE'){h=`<div class="row"><label>请假原因</label><input id="f-reason" style="width:420px" placeholder="必填，如：发烧就医"></div>`;}
+  else if(t==='CHANGE_BUS'){
+    h=`<div class="row"><label>目标线路</label><select id="f-route" onchange="fillStops('f-route','f-stop')">${otherRoutes.map(x=>`<option value="${x.id}">${esc(x.name)}（容量${x.capacity}）</option>`).join('')}</select>
+        <label>目标站点</label><select id="f-stop"></select></div>
+        <div class="row"><label>原因</label><input id="f-reason" style="width:360px" placeholder="如：家长下班改走翠湖方向"></div>`;
+    setTimeout(()=>fillStops('f-route','f-stop'),0);
+  }
+  else if(t==='CHANGE_STOP'){
+    const cur=S.routes.find(x=>x.id===r.routeId);
+    h=`<div class="row"><label>新下车点</label><select id="f-stop">${cur.stops.filter(x=>x!==s.defaultStop).map(x=>`<option>${esc(x)}</option>`).join('')}</select>
+        <label>原因</label><input id="f-reason" style="width:320px"></div>`;
+  }
+  else{
+    h=`<div class="row"><label>代接人</label><input id="f-alt" placeholder="代接人姓名" style="width:160px">
+        <label>手机号</label><input id="f-reason" placeholder="11位手机号，下车安全员核对" style="width:240px"></div>`;
+  }
+  $('req-fields').innerHTML=h;
+}
+function fillStops(routeSel,stopSel){
+  const r=S.routes.find(x=>x.id===$(routeSel).value);
+  $(stopSel).innerHTML=r.stops.map(x=>`<option>${esc(x)}</option>`).join('');
+}
+async function submitReq(sid){
+  const type=$('rtype').value;
+  const body={studentId:sid,type,reason:$('f-reason')?.value||'',targetRouteId:$('f-route')?.value||'',
+    targetStop:$('f-stop')?.value||'',alternatePickupPerson:$('f-alt')?.value||''};
+  try{
+    const r=await act('/requests',body);
+    if(r.status==='REJECTED'){toast('系统自动驳回：'+r.reviewNote,'err');}
+    else{toast('已提交，等待随车安全员确认','ok');}
+  }catch(e){}
+}
+async function pickupChange(sid){
+  const d=await promptModal('临时变更接送人',
+    `<div class="small muted" style="margin-bottom:8px">登记后立即把司机、安全员、班主任、管理员串到同一异常事件，并给各方发送通知。</div>
+     <textarea id="m-pc" placeholder="例如：原定爸爸接，现改为同事王阿姨（138xxxx）凭身份证接"></textarea>`);
+  if(!d)return;
+  await act('/incident/report-pickup-change',{studentId:sid,description:d[0]});
+  toast('已生成临时变更接送人事件并通知五方','ok');
+}
+
+// ---------- 我的申请 ----------
+function pReq(){
+  const list=S.user.role==='PARENT'?S.requests.filter(r=>r.parentUsername===S.user.username):S.requests;
+  return `<div class="card"><h3>📝 申请记录（容量 → 座位 → 校规 → 安全员确认）</h3>
+    <table><tr><th>#</th><th>学生</th><th>类型</th><th>详情/原因</th><th>线路容量校验</th><th>车辆座位校验</th><th>学校规则</th><th>状态</th><th>确认人/时间</th></tr>
+    ${list.map(r=>{const s=student(r.studentId);return `<tr>
+      <td>${r.id}</td><td>${esc(s?.name)}<div class="small muted">${esc(s?.className)}</div></td>
+      <td>${CHANGE_NAME[r.type]}</td>
+      <td class="small">${esc((r.targetRouteId?routeName(r.targetRouteId)+' / ':'')+(r.targetStop||'')+(r.alternatePickupPerson?'代接:'+r.alternatePickupPerson:'')+(r.reason?'｜'+r.reason:''))}</td>
+      <td class="small ${r.capacityCheck.includes('不足')?'t-red':''}">${esc(r.capacityCheck)}</td>
+      <td class="small ${r.seatCheck.includes('不足')?'t-red':''}">${esc(r.seatCheck)}</td>
+      <td class="small">${esc(r.ruleCheck)}</td>
+      <td>${reqStatusTag(r)}</td>
+      <td class="small">${r.reviewedBy?esc(r.reviewedBy)+' '+r.reviewedAt.slice(5,16):'—'}${r.reviewNote?'<div class="t-red">'+esc(r.reviewNote)+'</div>':''}</td>
+    </tr>`;}).join('')||'<tr><td colspan="9" class="muted">暂无申请</td></tr>'}</table></div>`;
+}
+
+// ================= 安全员 =================
+function myRouteIds(){return S.user.scopeIds.filter(x=>x.startsWith('R'));}
+function pPend(){
+  const can=S.user.role==='ADMIN'||S.user.role==='ATTENDANT';
+  const list=S.requests.filter(r=>S.user.role==='ADMIN'||can)
+    .filter(r=>S.user.role==='ADMIN'||!r.targetRouteId||myRouteIds().includes(r.targetRouteId)||myRouteIds().includes(student(r.studentId)?.routeId))
+    .filter(r=>r.status==='PENDING'||S.user.role==='ADMIN');
+  return `<div class="card"><h3>✔ 待随车安全员确认的申请</h3>
+    <table><tr><th>#</th><th>学生</th><th>类型</th><th>容量/座位/校规</th><th>提交</th><th>状态</th><th>操作</th></tr>
+    ${list.map(r=>{const s=student(r.studentId);return `<tr>
+      <td>${r.id}</td><td>${esc(s?.name)} ${s?.specialCare?'<span class="care">♿</span>':''}<div class="small muted">${esc(s?.className)}｜${esc(routeName(r.targetRouteId||s.routeId))}</div></td>
+      <td>${CHANGE_NAME[r.type]}</td>
+      <td class="small">${esc(r.capacityCheck)}<br>${esc(r.seatCheck)}<br>${esc(r.ruleCheck)}</td>
+      <td class="small muted">${esc(r.parentUsername)}<br>${r.createdAt.slice(5,16)}</td>
+      <td>${reqStatusTag(r)}</td>
+      <td class="btns">${r.status==='PENDING'?`
+        <button class="btn ok sm" onclick="reviewReq(${r.id},true)">确认通过</button>
+        <button class="btn danger sm" onclick="reviewReq(${r.id},false)">驳回</button>`:'—'}</td>
+    </tr>`;}).join('')||'<tr><td colspan="7" class="muted">暂无待确认申请</td></tr>'}</table></div>`;
+}
+async function reviewReq(id,approve){
+  let note='';
+  if(!approve){const d=await promptModal('驳回理由','<textarea id="m-0" placeholder="请填写驳回原因"></textarea>');if(!d)return;note=d[0];}
+  await act('/requests/'+id+'/review',{approve,note});
+  toast(approve?'已确认通过，五方已同步':'已驳回','ok');
+}
+function routeSelect(id){return `<select id="${id}">${myRouteIds().concat(S.user.role==='ADMIN'?S.routes.map(r=>r.id):[]).filter((v,i,a)=>a.indexOf(v)===i).map(rid=>`<option value="${rid}">${esc(routeName(rid))}</option>`).join('')}</select>`;}
+function pMorning(){
+  return `<div class="card"><h3>🌅 早晨上车 · 按站点点名</h3>
+    <div class="row"><label>线路</label><span id="am-sel">${routeSelect('am-route')}</span>
+      <button class="btn ghost sm" onclick="loadAll()">刷新名单</button>
+      <span class="muted small">点名状态实时同步班主任与家长；"未到"自动开启异常事件串联五方</span></div>
+    <div id="am-list"></div></div>`;
+}
+function pAfternoon(){
+  return `<div class="card"><h3>🏫 放学乘车名单（按请假/社团/改乘/车辆实时状态生成）</h3>
+    <div class="row"><label>线路</label><span id="pm-sel">${routeSelect('pm-route')}</span>
+      <button class="btn ghost sm" onclick="loadAll()">重新生成名单</button></div>
+    <div id="pm-list"></div></div>`;
+}
+// 名单内容在 renderAll 后单独注入（避免 select 选中值被冲掉）
+function fillRosters(){
+  if(currentTab==='am'&&$('am-route')){
+    const rid=$('am-route').value;$('am-route').onchange=fillRosters;
+    const rows=S.facts.facts.filter(f=>f.ride.changeType!=='LEAVE'&&f.effectiveRouteId===rid);
+    const route=S.routes.find(r=>r.id===rid);
+    const byStop={};route.stops.forEach(st=>byStop[st]=[]);
+    rows.forEach(f=>(byStop[f.morningStop]??=[]).push(f));
+    $('am-list').innerHTML=route.stops.map(st=>{
+      const list=byStop[st]||[];if(!list.length)return '';
+      return `<h3 style="margin-top:14px">📍 ${esc(st)} <span class="tag t-gray">${list.length}人</span></h3>
+      <table><tr><th>学生</th><th>班级</th><th>变更</th><th>家长备注</th><th>当前状态</th><th>点名</th></tr>
+      ${list.map(f=>{const s=student(f.studentId),r=f.ride;return `<tr>
+        <td><b>${esc(s.name)}</b> ${s.specialCare?'<span class="care">♿特殊照护</span>':''}</td>
+        <td>${esc(s.className)}</td><td><span class="tag ${r.changeType==='NONE'?'t-gray':'t-purple'}">${CHANGE_NAME[r.changeType]}</span></td>
+        <td class="small">${esc(r.parentNote)||'<span class="muted">—</span>'}</td>
+        <td>${mTag(r.morningStatus)}</td>
+        <td class="btns">
+          <button class="btn ok sm" onclick="markM('${s.id}','BOARDED')">已上车</button>
+          <button class="btn danger sm" onclick="markM('${s.id}','ABSENT_NO_SHOW')">未到</button>
+          <button class="btn warn sm" onclick="markM('${s.id}','LATE')">迟到</button>
+          <button class="btn ghost sm" onclick="markM('${s.id}','TEMP_BOARDED')">临时上车</button>
+        </td></tr>`;}).join('')}</table>`;
+    }).join('')||'<div class="muted">该线路今日无计划乘车学生</div>';
+  }
+  if(currentTab==='pm'&&$('pm-route')){
+    const rid=$('pm-route').value;$('pm-route').onchange=fillRosters;
+    const route=S.routes.find(r=>r.id===rid),v=S.vehicles.find(x=>x.routeId===rid);
+    const rows=S.facts.facts.filter(f=>f.ride.changeType!=='LEAVE'&&f.effectiveRouteId===rid);
+    const riders=rows.filter(f=>!f.ride.clubActivity),excl=rows.filter(f=>f.ride.clubActivity);
+    const leavers=S.facts.facts.filter(f=>f.ride.changeType==='LEAVE'&&f.routeId===rid);
+    $('pm-list').innerHTML=`
+      <div class="grid g4" style="margin-bottom:10px">
+        <div class="stat"><div class="l">车辆 / 座位</div><b>${esc(v?.plate||'—')} / ${v?.seats||'-'}座</b></div>
+        <div class="stat"><div class="l">应乘人数</div><div class="v">${riders.length}</div></div>
+        <div class="stat"><div class="l">车辆实时状态</div><b>${v?`<span class="tag ${v.status==='DELAYED'?'t-red':'t-green'}">${v.status==='DELAYED'?'延误'+v.delayMinutes+'分':'准点/运行'}</span>`:'—'}</b><div class="small muted">${esc(v?.locationText||'')}</div></div>
+        <div class="stat"><div class="l">容量</div><b>${route.capacity}人</b></div>
+      </div>
+      <table><tr><th>下车站点（顺序）</th><th>学生</th><th>接娃人</th><th>早晨状态</th><th>当前放学状态</th><th>操作</th></tr>
+      ${riders.map(f=>{const s=student(f.studentId),r=f.ride;const pick=r.alternatePickupPerson?`<span class="tag t-purple">${esc(r.alternatePickupPerson)}（代接）</span>`:esc(s.pickupPerson);
+        return `<tr><td>${esc(f.afternoonStop)}</td>
+        <td><b>${esc(s.name)}</b> ${s.specialCare?'<span class="care">♿</span>':''}</td>
+        <td>${pick}</td><td>${mTag(r.morningStatus)}</td><td>${mTag(r.afternoonStatus)}</td>
+        <td class="btns">
+          <button class="btn ok sm" onclick="markA('${s.id}','ONBOARD')">已上车</button>
+          <button class="btn ghost sm" onclick="markA('${s.id}','DELIVERED')">已送达</button>
+          <button class="btn danger sm" onclick="markA('${s.id}','NOT_BOARDED')">未上车</button>
+          <button class="btn warn sm" onclick="markA('${s.id}','NO_PICKUP')">无人接</button>
+        </td></tr>`;}).join('')||'<tr><td colspan="6" class="muted">无应乘学生</td></tr>'}</table>
+      ${excl.length?`<h3 style="margin-top:14px">社团活动不乘车（${excl.length}人）</h3><table>${excl.map(f=>`<tr><td>${esc(student(f.studentId).name)}</td><td class="muted">参加社团活动，名单已自动排除</td></tr>`).join('')}</table>`:''}
+      ${leavers.length?`<h3 style="margin-top:14px">请假（${leavers.length}人）</h3><table>${leavers.map(f=>`<tr><td>${esc(student(f.studentId).name)}</td><td class="muted">当天请假</td></tr>`).join('')}</table>`:''}
+      <h3 style="margin-top:14px">发现学生上错车</h3>
+      <div class="row"><select id="wb-s">${S.students.map(s=>`<option value="${s.id}">${esc(s.name)}（${esc(s.className)}）</option>`).join('')}</select>
+        <select id="wb-v">${S.vehicles.map(v=>`<option value="${v.id}">${esc(v.plate)} · ${esc(routeName(v.routeId))}</option>`).join('')}</select>
+        <button class="btn danger sm" onclick="wrongBus()">登记上错车（立即开启异常事件）</button></div>`;
+  }
+}
+async function markM(sid,st){try{const d=await act('/morning/mark',{studentId:sid,status:st});if(d.incident)toast('已记录；该生未到，异常事件 #'+d.incident.id+' 已开启','err');else toast('点名已同步家长与班主任','ok');}catch(e){}}
+async function markA(sid,st){try{const d=await act('/afternoon/mark',{studentId:sid,status:st});if(d.incident)toast('异常事件 #'+d.incident.id+' 已开启，五方联动中','err');else toast('状态已同步','ok');}catch(e){}}
+async function wrongBus(){try{const i=await act('/wrong-bus',{studentId:$('wb-s').value,vehicleId:$('wb-v').value});toast('上错车异常事件 #'+i.id+' 已开启','err');}catch(e){}}
+
+// ================= 司机 =================
+function pBus(){
+  const my=S.vehicles.filter(v=>S.user.scopeIds.includes('*')||S.user.scopeIds.includes(v.id));
+  return my.map(v=>{const route=S.routes.find(r=>r.id===v.routeId);return `
+  <div class="card"><h3>🚍 ${esc(v.plate)} · ${esc(route.name)}（${v.seats}座）</h3>
+    <div class="grid g3">
+      <div class="stat"><div class="l">当前状态</div><b>${v.status==='DELAYED'?`延误 ${v.delayMinutes} 分钟`:v.status==='ON_TIME'?'准点待命':v.status==='RUNNING'?'运行中':'已收车'}</b></div>
+      <div class="stat"><div class="l">最新位置</div><b style="font-size:14px">${esc(v.locationText)}</b><div class="small muted">${v.updatedAt}</div></div>
+      <div class="stat"><div class="l">随车安全员</div><b>${esc(v.attendantUsername)}</b><div class="small muted">司机 ${esc(v.driverUsername)}</div></div>
+    </div>
+    <div style="height:12px"></div>
+    <div class="row"><label>位置</label><input id="loc-${v.id}" value="${esc(v.locationText)}" style="width:300px">
+      <label>延误分钟</label><input id="delay-${v.id}" type="number" value="${Math.max(v.delayMinutes,10)}" style="width:90px"></div>
+    <div class="btns">
+      <button class="btn ok sm" onclick="veh('${v.id}','ON_TIME')">恢复准点</button>
+      <button class="btn sm" onclick="veh('${v.id}','RUNNING')">开始运行</button>
+      <button class="btn danger sm" onclick="veh('${v.id}','DELAYED')">⚠ 上报车辆延误（自动串联全车学生五方）</button>
+      <button class="btn ghost sm" onclick="veh('${v.id}','FINISHED')">收车</button>
+    </div></div>`;
+  }).join('');
+}
+async function veh(vid,st){
+  try{const v=await act('/vehicle/status',{vehicleId:vid,status:st,locationText:$('loc-'+vid)?.value||'',delayMinutes:Number($('delay-'+vid)?.value||10)});
+  if(st==='DELAYED'){const inc=S.incidents.find(i=>i.vehicleId===vid&&i.status==='OPEN'&&i.type==='BUS_DELAY');toast('延误已上报，线路异常事件已开启/更新','err');}else toast('车辆状态已同步全平台','ok');}catch(e){}
+}
+
+// ================= 班主任 =================
+function pClass(){
+  const cid=S.user.scopeIds.find(x=>x.startsWith('C'));
+  const list=S.students.filter(s=>s.classId===cid);
+  return `<div class="card"><h3>🏫 ${esc(list[0]?.className||'班级')} · 当天同一份乘车事实</h3>
+  <table><tr><th>学生</th><th>默认线路/站点</th><th>今日实际线路/晚下车站</th><th>变更</th><th>早晨点名</th><th>放学状态</th><th>车辆实时</th><th>社团</th><th>家长确认</th></tr>
+  ${list.map(s=>{const f=factOf(s.id),r=f.ride,v=f.vehicle;return `<tr>
+    <td><b>${esc(s.name)}</b> ${s.specialCare?'<span class="care">♿</span>':''}<div class="small muted">${esc(r.parentNote)||''}</div></td>
+    <td class="small">${esc(routeName(s.routeId))}<br>${esc(s.defaultStop)}</td>
+    <td class="small">${esc(f.effectiveRouteName)}<br>${esc(f.afternoonStop)}</td>
+    <td><span class="tag ${r.changeType==='NONE'?'t-gray':'t-purple'}">${CHANGE_NAME[r.changeType]}</span></td>
+    <td>${mTag(r.morningStatus)}</td><td>${mTag(r.afternoonStatus)}</td>
+    <td>${v?`<span class="tag ${v.status==='DELAYED'?'t-red':'t-green'}">${v.status==='DELAYED'?'延误'+v.delayMinutes+'分':'正常'}</span><div class="small muted">${esc(v.locationText)}</div>`:'—'}</td>
+    <td><input type="checkbox" ${r.clubActivity?'checked':''} onchange="act('/teacher/club',{studentId:'${s.id}',club:this.checked}).then(()=>toast('放学名单已重新生成并通知各方','ok'))"></td>
+    <td>${r.parentConfirmed?'<span class="tag t-green">已确认</span>':'<span class="tag t-gray">未确认</span>'}</td>
+  </tr>`;}).join('')}</table>
+  <div class="small muted" style="margin-top:10px">勾选社团后，该生从今天下午乘车名单自动排除并通知司机、安全员、家长。</div></div>`;
+}
+
+// ================= 管理员：统一事实 =================
+function pFacts(){
+  return `<div class="grid g4" style="margin-bottom:14px">
+    <div class="stat"><div class="v">${S.facts.facts.length}</div><div class="l">在档学生</div></div>
+    <div class="stat"><div class="v">${S.facts.facts.filter(f=>f.ride.changeType!=='LEAVE').length}</div><div class="l">今日乘车</div></div>
+    <div class="stat"><div class="v" style="color:var(--bad)">${S.incidents.filter(i=>i.status==='OPEN').length}</div><div class="l">处理中异常</div></div>
+    <div class="stat"><div class="v" style="color:var(--warn)">${S.facts.vehicles.filter(v=>v.status==='DELAYED').length}</div><div class="l">延误车辆</div></div>
+  </div>
+  <div class="card"><h3>🔗 学生当天状态 × 车辆实时状态（所有人看到同一份事实）</h3>
+  <table><tr><th>学生</th><th>班级</th><th>早晨</th><th>放学</th><th>变更</th><th>实际线路</th><th>晚下车站</th><th>车辆（实时）</th><th>家长确认</th></tr>
+  ${S.facts.facts.map(f=>{const s=student(f.studentId),r=f.ride,v=f.vehicle;return `<tr>
+    <td><b>${esc(s.name)}</b> ${s.specialCare?'<span class="care">♿</span>':''}</td><td>${esc(s.className)}</td>
+    <td>${mTag(r.morningStatus)}</td><td>${mTag(r.afternoonStatus)}</td>
+    <td><span class="tag ${r.changeType==='NONE'?'t-gray':'t-purple'}">${CHANGE_NAME[r.changeType]}</span></td>
+    <td>${esc(f.effectiveRouteName)}</td><td>${esc(f.afternoonStop)}</td>
+    <td>${v?`${esc(v.plate)} <span class="tag ${v.status==='DELAYED'?'t-red':'t-green'}">${v.status==='DELAYED'?'延误'+v.delayMinutes+'分':v.status}</span>`:'—'}</td>
+    <td>${r.parentConfirmed?'<span class="tag t-green">已确认</span>':'<span class="tag t-gray">未确认</span>'}</td></tr>`;}).join('')}</table></div>`;
+}
+
+// ================= 管理员：异常事件 =================
+function pIncidents(){
+  return `<div class="card"><h3>🚨 异常事件（司机 · 安全员 · 班主任 · 家长 · 管理员同一事件协同）</h3>
+  <div class="row">
+    <button class="btn ghost sm ${currentTab==='inc'?'':''}" onclick="window._incFilter='';renderAll()">全部</button>
+    <button class="btn ghost sm" onclick="window._incFilter='OPEN';renderAll()">处理中</button>
+    <button class="btn ghost sm" onclick="window._incFilter='RESOLVED';renderAll()">已关闭</button>
+  </div>
+  <table><tr><th>#</th><th>类型</th><th>学生/范围</th><th>线路/站点</th><th>描述</th><th>状态</th><th>时间</th><th>操作</th></tr>
+  ${S.incidents.filter(i=>!window._incFilter||i.status===window._incFilter).map(i=>{
+    const scope=i.studentId?esc(student(i.studentId)?.name):'<span class="tag t-amber">全车/线路级</span>';
+    return `<tr><td><b>#${i.id}</b></td><td>${incTag(i.type)}</td><td>${scope}</td>
+    <td class="small">${esc(routeName(i.routeId))}<br>${esc(i.stop||'')}</td>
+    <td class="small" style="max-width:280px">${esc(i.description)}</td>
+    <td>${i.status==='OPEN'?'<span class="tag t-red">处理中</span>':'<span class="tag t-green">已关闭</span>'}</td>
+    <td class="small muted">${i.openedAt.slice(5,16)}</td>
+    <td class="btns"><button class="btn sm" onclick="openIncident(${i.id})">处置 / 回执</button></td></tr>`;
+  }).join('')||'<tr><td colspan="8" class="muted">暂无异常事件</td></tr>'}</table></div>`;
+}
+async function openIncident(id){
+  const d=await api('/incidents/'+id);const i=d.incident,rc=d.receipts;
+  const s=i.studentId?student(i.studentId):null;
+  const receiptRows={};
+  rc.forEach(n=>{(receiptRows[n.recipientUsername]??=[]).push(n);});
+  $('modal-body').innerHTML=`<h3>🚨 事件 #${i.id} ${incTag(i.type)} ${i.status==='OPEN'?'<span class="tag t-red">处理中</span>':'<span class="tag t-green">已关闭</span>'}</h3>
+    <div class="kv" style="margin-bottom:10px">
+      <span class="k">涉及范围</span><span>${s?esc(s.name)+' '+esc(s.className):esc(routeName(i.routeId))+' 全车学生'}</span>
+      <span class="k">线路站点</span><span>${esc(routeName(i.routeId))} ｜ ${esc(i.stop||'—')} ｜ ${esc(i.vehicleId||'')}</span>
+      <span class="k">描述</span><span>${esc(i.description)}</span>
+      ${i.resolution?`<span class="k">处理结果</span><span>${esc(i.resolution)}</span><span class="k">责任结论</span><span><b>${esc(i.responsibility)}</b></span>`:''}
+    </div>
+    <h3>五方协同时间线</h3>
+    <div class="timeline">${i.timeline.map(t=>`<div class="ti">${esc(t.action)}<div class="tt">${esc(t.at)} · ${esc(t.actor)}（${ROLE_NAME[t.actorRole]||t.actorRole}）</div></div>`).join('')}</div>
+    <h3>同一信息的通知回执（家长 / 班主任 / 安全员是否都收到）</h3>
+    <table><tr><th>接收人</th><th>角色</th><th>标题</th><th>回执</th><th>确认时间</th></tr>
+    ${rc.map(n=>`<tr><td>${esc(n.recipientUsername)}</td><td>${ROLE_NAME[n.recipientRole]||n.recipientRole}</td>
+      <td class="small">${esc(n.title)}</td>
+      <td>${n.ack?'<span class="tag t-green">已确认收到</span>':'<span class="tag t-red">未回执</span>'}</td>
+      <td class="small muted">${esc(n.ackAt||'—')}</td></tr>`).join('')}</table>
+    <div style="height:10px"></div>
+    ${i.status==='OPEN'?`
+    <div class="row"><input id="inc-action" style="flex:1" placeholder="登记处置进展，如：已电话联系家长，孩子在小区门口等候">
+      <button class="btn ghost" onclick="addAction(${i.id})">追加进展并同步各方</button>
+      <button class="btn warn" onclick="nudge(${i.id})">📣 催办未回执方</button></div>
+    <h3 style="margin-top:14px">关闭事件并归入学生乘车档案</h3>
+    <textarea id="resolution" placeholder="处理结果（通知记录、定位、点名、家长确认均将归档）"></textarea>
+    <textarea id="responsibility" placeholder="责任结论，如：家长忘记站点时间，已约定明日提前 10 分钟到站；校方无责"></textarea>
+    <div class="row" style="margin-top:8px"><button class="btn ok" onclick="resolveInc(${i.id})">✔ 关闭事件并归档</button></div>`:'<div class="muted small">事件已关闭，归档可在「乘车档案」查看。</div>'}
+    <div class="row" style="margin-top:14px"><button class="btn ghost" onclick="closeModal()">关闭窗口</button></div>`;
+  openModalRaw();
+}
+async function addAction(id){const v=$('inc-action').value;if(!v)return;await act('/incidents/'+id+'/action',{action:v});$('inc-action').value='';toast('进展已同步事件各方','ok');await openIncident(id);}
+async function nudge(id){const d=await act('/incidents/'+id+'/nudge',null);toast('已向 '+d.resent+' 位未回执方再次推送','ok');await openIncident(id);}
+async function resolveInc(id){
+  const resolution=$('resolution').value,responsibility=$('responsibility').value;
+  if(!resolution||!responsibility){toast('处理结果与责任结论均为必填','err');return;}
+  await act('/incidents/'+id+'/resolve',{resolution,responsibility});
+  closeModal();toast('事件已关闭，通知/定位/点名/家长确认/责任结论已归档','ok');
+}
+
+// ================= 管理员：回执核对 =================
+function pReceipt(){
+  const groups={};
+  S.incidents.forEach(i=>{groups[i.id]=i;});
+  return `<div class="card"><h3>📬 通知回执核对（确认家长、班主任、安全员收到同一信息）</h3>
+  <table><tr><th>事件</th><th>类型</th><th>状态</th><th>接收人回执情况</th><th>操作</th></tr>
+  ${S.incidents.map(i=>{
+    const rc=S.notifications.filter(n=>n.incidentId===i.id);
+    const uname=u=>{const u2=S.allUsers?.[u];return u;};
+    const byRole={};rc.forEach(n=>{(byRole[n.recipientRole]??=[]).push(n);});
+    const chip=role=>{const arr=byRole[role];if(!arr)return '';const ack=arr.filter(x=>x.ack).length;
+      return `<span class="tag ${ack===arr.length?'t-green':ack?'t-amber':'t-red'}">${ROLE_NAME[role]} ${ack}/${arr.length}</span> `;};
+    return `<tr><td><b>#${i.id}</b></td><td>${incTag(i.type)}</td>
+      <td>${i.status==='OPEN'?'<span class="tag t-red">处理中</span>':'<span class="tag t-green">已关闭</span>'}</td>
+      <td>${['PARENT','TEACHER','ATTENDANT','DRIVER','ADMIN'].map(chip).join('')}<div class="small muted">共 ${rc.length} 条 / 已回执 ${rc.filter(n=>n.ack).length} 条</div></td>
+      <td class="btns"><button class="btn sm" onclick="openIncident(${i.id})">详情</button>
+      ${i.status==='OPEN'?`<button class="btn warn sm" onclick="act('/incidents/${i.id}/nudge',null).then(()=>toast('催办完成','ok'))">催办</button>`:''}</td></tr>`;
+  }).join('')||'<tr><td colspan="5" class="muted">暂无异常通知</td></tr>'}</table></div>`;
+}
+
+// ================= 档案 =================
+function pArchive(){
+  if(!S.archives){return '<div class="card muted">加载中…</div>';}
+  return `<div class="card"><h3>🗂 学生乘车档案（事件关闭后归档）</h3>
+  <table><tr><th>归档时间</th><th>日期</th><th>学生</th><th>事件</th><th>早晨/放学点名</th><th>家长确认</th><th>车辆定位快照</th><th>处理结果</th><th>责任结论</th><th>通知记录</th></tr>
+  ${S.archives.map(a=>{const s=student(a.studentId);return `<tr>
+    <td class="small muted">${a.archivedAt.slice(5,16)}</td><td>${a.date}</td>
+    <td><b>${esc(s?.name)}</b><div class="small muted">${esc(s?.className)}</div></td>
+    <td>#${a.incidentId} ${incTag(a.incidentType)}</td>
+    <td class="small">${mTag(a.morningStatus)} ${mTag(a.afternoonStatus)}</td>
+    <td>${a.parentConfirmed?'<span class="tag t-green">已确认</span>':'<span class="tag t-amber">未确认</span>'}</td>
+    <td class="small muted" style="max-width:220px">${esc(a.vehicleSnapshot)}</td>
+    <td class="small" style="max-width:200px">${esc(a.resolution)}</td>
+    <td class="small"><b>${esc(a.responsibility)}</b></td>
+    <td class="small">${(a.notificationIds||[]).length} 条</td></tr>`;}).join('')||'<tr><td colspan="10" class="muted">暂无归档（关闭异常事件后自动生成）</td></tr>'}</table></div>`;
+}
+
+// ================= 复盘 =================
+function pReview(){
+  const r=S.review;if(!r)return '';
+  return `<div class="grid g4" style="margin-bottom:14px">
+    <div class="stat"><div class="v">${r.incidentTotal}</div><div class="l">异常总数（${r.openTotal} 处理中）</div></div>
+    <div class="stat"><div class="v">${r.hotspots.length}</div><div class="l">涉及站点数</div></div>
+    <div class="stat"><div class="v">${r.receiptAcked}/${r.receiptTotal}</div><div class="l">通知已回执</div></div>
+    <div class="stat"><div class="v">${r.receiptRate}%</div><div class="l">回执到位率</div></div>
+  </div>
+  <div class="card"><h3>📊 按线路复盘 · 异常高发站点</h3>
+  <table><tr><th>排名</th><th>线路</th><th>站点</th><th>异常次数</th><th>处理中</th><th>类型分布</th></tr>
+  ${r.hotspots.map((h,idx)=>`<tr>
+    <td><b>${idx+1}</b> ${idx<3?'🔥':''}</td><td>${esc(routeName(h.routeId))}</td><td><b>${esc(h.stop)}</b></td>
+    <td><span class="tag ${h.total>=2?'t-red':'t-blue'}">${h.total} 次</span></td>
+    <td>${h.open?'<span class="tag t-amber">'+h.open+'</span>':'0'}</td>
+    <td class="small">${Object.entries(h.byType).map(([k,v])=>`${esc(k)}×${v}`).join('，')}</td></tr>`).join('')
+    ||'<tr><td colspan="6" class="muted">暂无异常站点数据</td></tr>'}</table></div>`;
+}
+
+// ================= 通知 =================
+function renderNotifs(){
+  if(!$('notif-list'))return;
+  $('notif-list').innerHTML=S.notifications.map(n=>`<div class="n ${n.ack?'':'unread'}">
+    <div class="nt">${esc(n.title)} <span class="tag t-gray">${ROLE_NAME[n.recipientRole]}</span></div>
+    <div class="nc">${esc(n.content)}</div>
+    <div class="nf"><span>${n.createdAt}${n.incidentId?` · 事件 #${n.incidentId}`:''}</span>
+    ${n.ack?`<span class="t-green">✔ ${n.ackAt.slice(5,16)}</span>`:`<button class="btn sm" onclick="ackn(${n.id})">确认收到</button>`}</span></div></div>`).join('')
+    ||'<div class="muted small">暂无通知</div>';
+}
+async function ackn(id){await act('/notifications/'+id+'/ack');toast('回执已记录，学校可核对','ok');}
+function pNotif(){return `<div class="card"><h3>📬 我的通知回执</h3><div class="muted small" style="margin-bottom:10px">每条异常/状态变更均逐人通知；点击"确认收到"后学校可核对家长、班主任、安全员是否收到同一信息。</div><div id="notif-inline"></div></div>`;}
+
+// ================= 弹窗 =================
+function openModalRaw(){$('modal-mask').classList.add('open');}
+function closeModal(){$('modal-mask').classList.remove('open');}
+function promptModal(title,innerHtml){
+  return new Promise(resolve=>{
+    $('modal-body').innerHTML=`<h3>${esc(title)}</h3>${innerHtml}
+      <div class="row" style="margin-top:10px"><button class="btn" id="m-ok">确定</button>
+      <button class="btn ghost" id="m-cancel">取消</button></div>`;
+    openModalRaw();
+    $('m-ok').onclick=()=>{const vals=[...document.querySelectorAll('#modal-body input[id^="m-"],#modal-body textarea[id^="m-"]')].map(x=>x.value);closeModal();resolve(vals);};
+    $('m-cancel').onclick=()=>{closeModal();resolve(null);};
+  });
+}
+$('modal-mask').addEventListener('click',e=>{if(e.target.id==='modal-mask')closeModal();});
+function openDrawer(){$('drawer').classList.add('open');$('drawer-mask').classList.add('open');}
+function closeDrawer(){$('drawer').classList.remove('open');$('drawer-mask').classList.remove('open');}
+
+// ---------- 启动 ----------
+renderAccounts();
+$('li-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+const saved=localStorage.getItem('sb_user');
+if(saved){api('/bootstrap',{headers:{'X-User':saved}}).then(d=>{S=d;$('login').style.display='none';$('app').style.display='block';$('today').textContent='今天 '+S.facts.date;$('who').textContent=`${S.user.name} · ${ROLE_NAME[S.user.role]}`;currentTab=TABS[S.user.role][0];renderTabs();renderAll();}).catch(()=>{});}
+// 轻量轮询：只刷未读角标与当前名单，避免打断表单
+setInterval(async()=>{
+  if(!S)return;
+  try{
+    const n=await api('/notifications/mine');
+    S.notifications=n;const un=n.filter(x=>!x.ack).length;
+    $('notif-dot').style.display=un?'inline-block':'none';$('notif-dot').textContent=un;
+    renderNotifs();
+    if(currentTab==='am'||currentTab==='pm'){const d=await api('/facts');S.facts=d;fillRosters();}
+  }catch(e){}
+},12000);
+// renderAll 后注入名单（select 在 panel 重绘后保留默认选中项）
+const mo=new MutationObserver(()=>{try{fillRosters();if(currentTab==='notif'&&$('notif-inline'))$('notif-inline').innerHTML=$('notif-list').innerHTML;}catch(e){}});
+mo.observe(document.getElementById('panel'),{childList:true});
+</script>
+</body>
+</html>

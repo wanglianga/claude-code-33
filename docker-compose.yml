@@ -1,0 +1,38 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ${COMPOSE_PROJECT_NAME}-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    # 数据库仅在 compose 内部网络可见，不发布到宿主
+    expose:
+      - "6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    image: ${COMPOSE_PROJECT_NAME}-app:latest
+    container_name: ${COMPOSE_PROJECT_NAME}-app
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+    ports:
+      - "${CC_PUBLISH_PORT}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    restart: unless-stopped
+
+volumes:
+  redis-data:

@@ -1,0 +1,125 @@
+# 城市校园校车乘车点名与临时改乘服务
+
+基于 **Java 21 + Spring Boot 3 + Redis** 的 0-1 工程。围绕"同一份乘车事实"串联家长、随车安全员、司机、班主任、校车管理员五方角色。
+
+## 原始需求
+
+> 开发城市校园校车乘车点名与临时改乘服务，可采用 Java、Spring Boot 和 Redis。学校为每名学生配置默认线路、上车点、下车接送人、班级、家长联系方式和是否需要特殊照护。家长提交请假、临时改乘、改下车点或他人代接申请后，服务检查线路容量、车辆座位、安全员确认和学校规则。早晨上车时，随车安全员按站点点名，记录未到、迟到、临时上车和家长备注；这些状态同步给班主任和家长。放学时，服务根据学生当天是否请假、是否参加社团、是否改乘和车辆位置生成乘车名单。若学生未上车、上错车、下车点无人接、车辆延误或家长临时变更接送人，服务要把司机、安全员、班主任、家长和校车管理员串到同一事件。事件关闭后，通知记录、定位、点名、家长确认和责任结论进入学生乘车档案。服务还要为每个异常生成通知回执，学校可以确认家长、班主任和安全员是否都收到同一信息。校车管理员可以按线路复盘异常高发站点。服务还要把学生当天状态和车辆实时状态连接，班主任、家长和安全员看到的是同一份乘车事实，避免口头变更造成漏乘。
+
+## 能力对照
+
+| 需求 | 实现 |
+|---|---|
+| 学生默认配置（线路/上下车点/接送人/班级/家长电话/特殊照护） | 学生档案 `Student`，种子数据 5 名学生（含 1 名需特殊照护） |
+| 请假 / 临时改乘 / 改下车点 / 他人代接 | `POST /api/requests`，四类申请 |
+| 线路容量 + 车辆座位校验 | 容量（线路 `capacity`）与物理座位（车辆 `seats`）**双重校验**，任一不足系统直接驳回 |
+| 安全员确认 + 学校规则 | 硬性校验通过后进入 `PENDING`，随车安全员确认/驳回；校规含必填原因、站点备案、特殊照护交接、代接人电话登记 |
+| 早晨按站点点名（未到/迟到/临时上车/家长备注） | 安全员「早晨点名」按站点分组；备注实时同步；"未到"自动开启异常事件 |
+| 放学名单生成 | 按「请假 / 社团 / 改乘 / 车辆实时状态」动态生成，社团/请假自动排除并说明原因 |
+| 五类异常五方联动 | 未上车、上错车、下车点无人接、车辆延误（线路级，自动串联全车学生五方）、临时变更接送人；同一事件时间线协同 |
+| 事件关闭归档 | 通知记录、车辆定位快照、点名叫态、家长确认、处理结果、责任结论进入学生乘车档案 |
+| 通知回执 | 每个异常向五方逐人生成通知，逐人「确认收到」；管理员按事件核对家长/班主任/安全员回执，可催办 |
+| 高发站点复盘 | 管理员「高发站点复盘」：按线路 × 站点聚合异常次数、类型分布、未关闭数 + 全平台回执到位率 |
+| 同一份乘车事实 | `GET /api/facts` 学生当天状态 × 车辆实时状态连接，五方界面共用同一数据源，全局写锁串行更新 |
+
+## 快速启动（宿主 docker compose 一键部署）
+
+```bash
+cp .env.example .env          # CC_PUBLISH_PORT 可改；COMPOSE_PROJECT_NAME 由评测环境固定
+docker compose up -d --build
+docker compose ps             # app 与 redis 均为 healthy
+# 浏览器打开
+http://localhost:${CC_PUBLISH_PORT}/
+```
+
+- 仅 **app 端口发布到宿主**（`${CC_PUBLISH_PORT}:8080`）；Redis 不发布宿主端口，只在 compose 内网通过服务名 `redis` 访问。
+- 健康检查：`GET /api/health`（容器 HEALTHCHECK 同样使用此端点）。
+- 数据持久化在 `redis-data` 卷；清空重来：`docker compose down -v`。
+
+## 演示账号（逐角色）
+
+| 角色 | 用户名 | 密码 | 权限/数据范围 |
+|---|---|---|---|
+| 校车管理员 | `admin` | `admin123` | 全部：统一事实、审批、异常闭环、回执核对、档案、高发站点复盘 |
+| 随车安全员（一号线 R1/V1） | `anyi` | `att123` | R1 申请确认、早晨/放学点名、异常登记 |
+| 随车安全员（二号线 R2/V2） | `liantai` | `att123` | R2 申请确认、点名（二号线 3/3 满员，用于演示容量+座位驳回） |
+| 司机（一号线） | `dli` | `driver123` | V1 定位/延误上报（延误自动开启线路级事件） |
+| 司机（二号线） | `wangshifu` | `driver123` | V2 定位/延误上报 |
+| 班主任（三年级1班 C31） | `teacher31` | `teacher123` | 班级乘车事实、社团登记、通知回执 |
+| 家长（张小明 S1） | `zhangfu` | `parent123` | 申请、备注、确认接到；S1 在一号线（有空位，可改乘成功） |
+| 家长（李小华 S2，特殊照护） | `limu` | `parent123` | S2 哮喘需随车照护，改乘触发特殊照护交接校规 |
+| 家长（王小芳 S3） | `wangma` | `parent123` | S3 在二号线（满员，改乘一号线可演示跨线容量） |
+| 家长（赵小强 S4） | `zhaoba` | `parent123` | 二号线 |
+| 家长（陈小雨 S5） | `chenma` | `parent123` | 二号线 |
+
+演示数据：2 条线路（一号线 20 座/容量 20；二号线 3 座/容量 3，满载）、2 辆车、5 名学生。
+
+## 推荐演示路径（浏览器）
+
+1. `zhangfu` 登录 → 为张小明提交「临时改乘 → 二号线翠湖天地」→ 看到**容量/座位不足被系统自动驳回**（二号线满载）。
+2. 改提交「临时改乘 → 一号线市民中心」→ 容量、座位、校规通过 → 状态为**待安全员确认**。
+3. `anyi` 登录 → 待确认申请 → 确认通过；五方收到通知。
+4. 早晨点名：某站点点「未到」→ 自动开启 **#异常事件**，五方通知进入同一事件。
+5. `wangshifu` 登录 → V2 上报延误（位置+分钟）→ 自动开启**线路级**延误事件，全车学生家长/班主任都被串入。
+6. 各角色点铃铛里的「确认收到」→ `admin` 在「通知回执核对」核对家长/班主任/安全员是否都收到同一信息，可催办。
+7. 放学点名点「无人接」→ 异常事件；家长端「确认孩子已接到」→ 事件时间线出现家长确认。
+8. `admin` 在异常事件里追加进展、填写处理结果与责任结论 → 关闭 → 自动进入「乘车档案」（含定位快照、点名、通知条数）。
+9. 多制造几个异常后查看「高发站点复盘」的站点排行与回执到位率。
+
+## 主要接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/login` | 登录（演示态用 `X-User` 头保持会话） |
+| GET | `/api/bootstrap` | 首屏全量数据 |
+| GET | `/api/facts` | 当天统一乘车事实（学生状态 × 车辆实时状态） |
+| POST | `/api/requests` | 家长提交申请（容量/座位/校规校验） |
+| POST | `/api/requests/{id}/review` | 安全员/管理员确认或驳回 |
+| GET | `/api/roster/morning?routeId=` | 早晨按站点名册 |
+| POST | `/api/morning/mark` | 早晨点名（BOARDED/ABSENT_NO_SHOW/LATE/TEMP_BOARDED） |
+| GET | `/api/roster/afternoon?routeId=` | 放学名单（请假/社团/改乘联动） |
+| POST | `/api/afternoon/mark` | 放学点名（ONBOARD/DELIVERED/NOT_BOARDED/NO_PICKUP/WRONG_BUS） |
+| POST | `/api/wrong-bus` | 上错车登记 |
+| POST | `/api/vehicle/status` | 司机更新定位/延误（延误自动开事件） |
+| POST | `/api/parent/note` · `/api/parent/confirm` | 家长备注 / 家长确认接到 |
+| POST | `/api/incident/report-pickup-change` | 临时变更接送人 |
+| POST | `/api/teacher/club` | 班主任登记社团 |
+| GET/POST | `/api/incidents`、`/{id}/action`、`/{id}/nudge`、`/{id}/resolve` | 异常协同/催办/关闭归档 |
+| GET | `/api/incidents/{id}/receipts` | 事件通知回执明细 |
+| GET/POST | `/api/notifications/mine`、`/{id}/ack` | 我的通知 / 确认收到 |
+| GET | `/api/archives?studentId=` | 学生乘车档案 |
+| GET | `/api/review/hotspots?routeId=` | 异常高发站点复盘 |
+
+## 验证方式（= 宿主 docker compose up）
+
+本工程在隔离容器中通过宿主 Docker daemon 完成验证：
+
+```bash
+docker compose up -d --build
+PORT=$(docker compose port app 8080 | cut -d: -f2)
+curl -fsS http://host.docker.internal:$PORT/api/health
+docker compose down
+```
+
+以「compose up 后 app/redis 健康检查通过 + 申请校验→安全员确认→点名→异常五方联动→回执→关闭归档→站点复盘全流程接口走通」为验收标准。
+
+## 工程结构
+
+```
+src/main/java/cn/schoolbus/
+├── SchoolBusApplication.java
+├── config/                 # MVC / 鉴权拦截器注册
+├── domain/                 # User/Student/Route/Vehicle/RideStatus/ChangeRequest/Incident/Notification/ArchiveEntry
+├── store/RedisStore.java   # Redis JSON 存储、集合索引、序列号、全局写锁
+├── service/                # SchoolBusService（核心业务）/ NotificationService（通知回执）
+├── bootstrap/DataSeeder.java
+├── support/                # 异常处理、演示态鉴权
+└── api/ApiController.java
+src/main/resources/
+├── application.properties
+└── static/index.html       # 五角色单页工作台（无外部依赖）
+Dockerfile                  # 多阶段构建（Maven 构建 → JRE 运行，非 root + HEALTHCHECK）
+docker-compose.yml          # app + redis（仅发布 app 端口）
+```
+
+> 说明：鉴权采用演示态 `X-User` 头（便于五角色快速切换评审）；生产环境应替换为会话/JWT 并细化数据权限。

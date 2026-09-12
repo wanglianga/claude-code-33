@@ -1,0 +1,67 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.secret
+*.secrets
+*.key
+*.pem
+*.crt
+*.p12
+*.jks
+*credentials*
+*credential*
+*token*
+*connection-string*
+
+# Build and dependency output
+node_modules/
+target/
+dist/
+build/
+out/
+coverage/
+.mvn/timing.properties
+
+# Caches, logs, temporary files, and local databases
+.cache/
+.gradle/
+.idea/
+*.log
+*.tmp
+*.temp
+*.swp
+*.sqlite
+*.sqlite3
+*.db
+tmp/
+temp/
+
+# Memory and skill material
+memory/
+**/memory/
+skill/
+skills/
+**/skill/
+**/skills/
+
+# Claude Code local state and QA artifacts
+CLAUDE.md
+.claude/
+**/.claude/
+.playwright-cli/
+output/
+traces/
+*_traces/
+qa/
+qa-*/
+*-qa-report*
+*.jsonl
+*.trace
+*.har
+
+# IDE and OS files
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
