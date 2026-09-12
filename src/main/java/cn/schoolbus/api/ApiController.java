@@ -75,15 +75,15 @@ public class ApiController {
         d.put("students", svc.students());
         d.put("routes", svc.routes());
         d.put("vehicles", svc.vehicles());
-        d.put("requests", svc.requests());
-        d.put("incidents", svc.incidents(null, null));
+        d.put("requests", svc.visibleRequests(u));
+        d.put("incidents", svc.incidents(u, null, null));
         d.put("notifications", store.listNotificationsByUser(u.username()));
         d.put("myNotificationsUnacked",
                 store.listNotificationsByUser(u.username()).stream().filter(n -> !n.ack()).count());
         d.put("facts", svc.dailyFacts());
         if ("ADMIN".equals(u.role())) {
-            d.put("archives", svc.archives(null));
-            d.put("review", svc.hotspotReview(null));
+            d.put("archives", svc.archives(u, null));
+            d.put("review", svc.hotspotReview(u, null));
             d.put("storeInfo", store.info());
         }
         return ok(d);
@@ -107,13 +107,13 @@ public class ApiController {
     // ---------- 点名 / 名单 ----------
 
     @GetMapping("/roster/morning")
-    public Map<String, Object> morningRoster(@RequestParam String routeId) {
-        return ok(svc.morningRoster(routeId));
+    public Map<String, Object> morningRoster(HttpServletRequest req, @RequestParam String routeId) {
+        return ok(svc.morningRoster(me(req), routeId));
     }
 
     @GetMapping("/roster/afternoon")
-    public Map<String, Object> afternoonRoster(@RequestParam String routeId) {
-        return ok(svc.afternoonRoster(routeId));
+    public Map<String, Object> afternoonRoster(HttpServletRequest req, @RequestParam String routeId) {
+        return ok(svc.afternoonRoster(me(req), routeId));
     }
 
     @PostMapping("/morning/mark")
@@ -148,7 +148,7 @@ public class ApiController {
 
     @PostMapping("/parent/confirm")
     public Map<String, Object> confirm(HttpServletRequest req, @RequestBody Map<String, Object> body) {
-        return ok(svc.parentConfirm(str(body, "studentId")));
+        return ok(svc.parentConfirm(me(req), str(body, "studentId")));
     }
 
     @PostMapping("/incident/report-pickup-change")
@@ -166,16 +166,17 @@ public class ApiController {
     // ---------- 异常事件 ----------
 
     @GetMapping("/incidents")
-    public Map<String, Object> incidents(@RequestParam(required = false) String status,
+    public Map<String, Object> incidents(HttpServletRequest req,
+                                         @RequestParam(required = false) String status,
                                          @RequestParam(required = false) String routeId) {
-        return ok(svc.incidents(status, routeId));
+        return ok(svc.incidents(me(req), status, routeId));
     }
 
     @GetMapping("/incidents/{id}")
-    public Map<String, Object> incident(@PathVariable long id) {
+    public Map<String, Object> incident(HttpServletRequest req, @PathVariable long id) {
         Map<String, Object> d = new LinkedHashMap<>();
-        d.put("incident", svc.incident(id));
-        d.put("receipts", svc.incidentReceipts(id));
+        d.put("incident", svc.viewIncident(me(req), id));
+        d.put("receipts", svc.incidentReceipts(me(req), id));
         return ok(d);
     }
 
@@ -186,13 +187,13 @@ public class ApiController {
     }
 
     @GetMapping("/incidents/{id}/receipts")
-    public Map<String, Object> receipts(@PathVariable long id) {
-        return ok(svc.incidentReceipts(id));
+    public Map<String, Object> receipts(HttpServletRequest req, @PathVariable long id) {
+        return ok(svc.incidentReceipts(me(req), id));
     }
 
     @PostMapping("/incidents/{id}/nudge")
-    public Map<String, Object> nudge(@PathVariable long id) {
-        return ok(Map.of("resent", notif.nudge(id)));
+    public Map<String, Object> nudge(HttpServletRequest req, @PathVariable long id) {
+        return ok(Map.of("resent", svc.nudge(me(req), id)));
     }
 
     @PostMapping("/incidents/{id}/resolve")
@@ -216,13 +217,15 @@ public class ApiController {
     // ---------- 档案 / 复盘 / 统一事实 ----------
 
     @GetMapping("/archives")
-    public Map<String, Object> archives(@RequestParam(required = false) String studentId) {
-        return ok(svc.archives(studentId));
+    public Map<String, Object> archives(HttpServletRequest req,
+                                        @RequestParam(required = false) String studentId) {
+        return ok(svc.archives(me(req), studentId));
     }
 
     @GetMapping("/review/hotspots")
-    public Map<String, Object> hotspots(@RequestParam(required = false) String routeId) {
-        return ok(svc.hotspotReview(routeId));
+    public Map<String, Object> hotspots(HttpServletRequest req,
+                                        @RequestParam(required = false) String routeId) {
+        return ok(svc.hotspotReview(me(req), routeId));
     }
 
     @GetMapping("/facts")

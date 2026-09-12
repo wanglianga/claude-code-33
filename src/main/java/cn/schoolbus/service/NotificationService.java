@@ -4,6 +4,7 @@ import cn.schoolbus.domain.Notification;
 import cn.schoolbus.domain.User;
 import cn.schoolbus.store.RedisStore;
 import cn.schoolbus.support.ApiException;
+import cn.schoolbus.support.ForbiddenException;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -43,7 +44,7 @@ public class NotificationService {
         Notification n = store.getNotification(notificationId);
         if (n == null) throw new ApiException("通知不存在");
         if (!n.recipientUsername().equals(username)) {
-            throw new ApiException("只能确认本人收到的通知");
+            throw new ForbiddenException("越权：只能确认本人收到的通知");
         }
         if (!n.ack()) {
             n = new Notification(n.id(), n.createdAt(), n.incidentId(), n.eventKey(),

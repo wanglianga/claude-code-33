@@ -3,6 +3,7 @@ package cn.schoolbus.service;
 import cn.schoolbus.domain.*;
 import cn.schoolbus.store.RedisStore;
 import cn.schoolbus.support.ApiException;
+import cn.schoolbus.support.ForbiddenException;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -106,6 +107,125 @@ public class SchoolBusService {
                 .map(User::username).toList();
     }
 
+    // ================= 角色 / scope 守卫 =================
+
+    private void requireRole(User u, String... roles) {
+        for (String r : roles) {
+            if (r.equals(u.role())) return;
+        }
+        throw new ForbiddenException("无权操作：需要 "
+                + java.util.Arrays.stream(roles).map(this::roleName).reduce((a, b) -> a + "/" + b).orElse("")
+                + " 身份");
+    }
+
+    private String roleName(String r) {
+        return switch (r) {
+            case "ADMIN" -> "校车管理员";
+            case "DRIVER" -> "司机";
+            case "ATTENDANT" -> "随车安全员";
+            case "TEACHER" -> "班主任";
+            case "PARENT" -> "家长";
+            default -> r;
+        };
+    }
+
+    /** 家长只能操作本人监护学生；其他角色不做学生归属限制（另有线路/班级 scope 校验） */
+    private void requireParentChild(User u, Student s) {
+        if ("PARENT".equals(u.role()) && !u.scopeIds().contains(s.id())) {
+            throw new ForbiddenException("越权：只能操作本人监护的学生（" + s.name() + "）");
+        }
+    }
+
+    /** 班主任只能操作授权班级的学生 */
+    private void requireTeacherClass(User u, Student s) {
+        if ("TEACHER".equals(u.role()) && !u.scopeIds().contains(s.classId())) {
+            throw new ForbiddenException("越权：您不是 " + s.className() + " 的班主任");
+        }
+    }
+
+    /**
+     * 点名（早晨/放学）：仅随车安全员/管理员；安全员只能操作所属线路（学生当天有效线路），
+     * 上错车场景必须是学生有效线路与当前车辆线路之一的安全员。
+     */
+    private void requireRosterAccess(User u, Student s, String routeId) {
+        requireRole(u, "ATTENDANT", "ADMIN");
+        if ("ADMIN".equals(u.role())) return;
+        if (!u.scopeIds().contains(routeId)) {
+            throw new ForbiddenException("越权：您不属于 " + mustRoute(routeId).name()
+                    + " 的随车安全员，不能对该线路学生点名");
+        }
+    }
+
+    /** 只有司机可以上报本车实时状态；管理员可代操作（调度） */
+    private void requireVehicleAccess(User u, Vehicle v) {
+        requireRole(u, "DRIVER", "ADMIN");
+        if ("DRIVER".equals(u.role()) && !u.scopeIds().contains(v.id())) {
+            throw new ForbiddenException("越权：只能更新本人驾驶的车辆（" + v.plate() + "）");
+        }
+    }
+
+    /** 事件处置/催办：五方人员中与该事件相关的人，或管理员 */
+    private void requireIncidentAccess(User u, Incident inc) {
+        if ("ADMIN".equals(u.role())) return;
+        if (inc.studentId() != null && !inc.studentId().isBlank()) {
+            Student s = mustStudent(inc.studentId());
+            requireParentChild(u, s);
+            requireTeacherClass(u, s);
+            if ("DRIVER".equals(u.role()) || "ATTENDANT".equals(u.role())) {
+                Vehicle v = inc.vehicleId() == null ? null : store.getVehicle(inc.vehicleId());
+                // 学生当前有效线路（上错车时学生本线与实际所在车辆线路可能不同，两线司乘均可访问）
+                RideStatus cur = store.getRide(inc.date(), s.id());
+                String studentRoute = cur == null ? s.routeId() : effectiveRoute(cur);
+                Vehicle studentVehicle = vehicleOfRoute(studentRoute);
+                if ("DRIVER".equals(u.role())) {
+                    boolean drivesThis = v != null && u.username().equals(v.driverUsername());
+                    boolean drivesHome = studentVehicle != null && u.username().equals(studentVehicle.driverUsername());
+                    if (!drivesThis && !drivesHome) {
+                        throw new ForbiddenException("越权：该事件不涉及您驾驶的车辆");
+                    }
+                } else {
+                    String scopeRoute = v == null ? inc.routeId() : v.routeId();
+                    if (!u.scopeIds().contains(scopeRoute) && !u.scopeIds().contains(studentRoute)) {
+                        throw new ForbiddenException("越权：该事件不在您负责的线路");
+                    }
+                }
+            }
+            return;
+        }
+        // 线路级事件：该线路司机/安全员、该车在乘学生的班主任/家长
+        Vehicle v = inc.vehicleId() == null ? vehicleOfRoute(inc.routeId()) : store.getVehicle(inc.vehicleId());
+        switch (u.role()) {
+            case "DRIVER" -> {
+                if (v == null || !u.username().equals(v.driverUsername())) {
+                    throw new ForbiddenException("越权：该线路级事件不涉及您驾驶的车辆");
+                }
+            }
+            case "ATTENDANT" -> {
+                if (!u.scopeIds().contains(inc.routeId())) {
+                    throw new ForbiddenException("越权：该线路级事件不在您负责的线路");
+                }
+            }
+            case "TEACHER", "PARENT" -> {
+                boolean related = store.listRides(inc.date()).stream()
+                        .filter(this::ridingToday)
+                        .filter(r -> effectiveRoute(r).equals(inc.routeId()))
+                        .map(RideStatus::studentId)
+                        .anyMatch(sid -> {
+                            Student rs = mustStudent(sid);
+                            return "PARENT".equals(u.role())
+                                    ? u.scopeIds().contains(sid)
+                                    : u.scopeIds().contains(rs.classId());
+                        });
+                if (!related) {
+                    throw new ForbiddenException("越权：该线路级事件与您的学生无关");
+                }
+            }
+            default -> throw new ForbiddenException("无权操作该事件");
+        }
+    }
+
+    // ================= 通知 / 基础查询 =================
+
     /** 一个学生事件涉及的五方：家长、班主任、司机、随车安全员、校车管理员 */
     private LinkedHashSet<String> partiesOf(Student s, String routeId) {
         LinkedHashSet<String> p = new LinkedHashSet<>();
@@ -148,12 +268,11 @@ public class SchoolBusService {
     // ================= 家长申请 =================
 
     public ChangeRequest submitRequest(User parent, Map<String, String> body) {
+        requireRole(parent, "PARENT", "ADMIN");
         String studentId = body.getOrDefault("studentId", "").trim();
         String type = body.getOrDefault("type", "").trim();
         Student s = mustStudent(studentId);
-        if ("PARENT".equals(parent.role()) && !parent.scopeIds().contains(studentId)) {
-            throw new ApiException("只能为本人监护的学生提交申请");
-        }
+        requireParentChild(parent, s);
         if (!List.of("LEAVE", "CHANGE_BUS", "CHANGE_STOP", "ALTERNATE_PICKUP").contains(type)) {
             throw new ApiException("申请类型非法");
         }
@@ -257,14 +376,19 @@ public class SchoolBusService {
     }
 
     public ChangeRequest reviewRequest(User reviewer, long id, boolean approve, String note) {
-        if (!List.of("ATTENDANT", "ADMIN").contains(reviewer.role())) {
-            throw new ApiException("仅随车安全员或校车管理员可以确认改乘申请");
-        }
+        requireRole(reviewer, "ATTENDANT", "ADMIN");
         return store.withLock(() -> {
             ChangeRequest cr = store.getRequest(id);
             if (cr == null) throw new ApiException("申请不存在");
             if (!"PENDING".equals(cr.status())) throw new ApiException("该申请已处理，不能重复确认");
             Student s = mustStudent(cr.studentId());
+            // 安全员只能确认所属线路相关申请：改乘认目标线路，其余（请假/改下车点/代接）认学生本线
+            if ("ATTENDANT".equals(reviewer.role())) {
+                String scopeRoute = "CHANGE_BUS".equals(cr.type()) ? cr.targetRouteId() : s.routeId();
+                if (!reviewer.scopeIds().contains(scopeRoute)) {
+                    throw new ForbiddenException("越权：该申请不在您负责的线路");
+                }
+            }
 
             String status = approve ? "APPROVED" : "REJECTED";
             ChangeRequest done = new ChangeRequest(cr.id(), cr.createdAt(), cr.studentId(),
@@ -344,10 +468,9 @@ public class SchoolBusService {
     // ================= 家长备注 / 社团 =================
 
     public RideStatus parentNote(User user, String studentId, String note) {
+        requireRole(user, "PARENT", "ADMIN");
         Student s = mustStudent(studentId);
-        if ("PARENT".equals(user.role()) && !user.scopeIds().contains(studentId)) {
-            throw new ApiException("只能为本人监护的学生留言");
-        }
+        requireParentChild(user, s);
         return store.withLock(() -> {
             RideStatus r = rideOf(studentId);
             RideStatus u = new RideStatus(r.id(), r.date(), r.studentId(), r.classId(), r.routeId(),
@@ -368,10 +491,9 @@ public class SchoolBusService {
     }
 
     public RideStatus setClub(User user, String studentId, boolean club) {
-        if ("PARENT".equals(user.role())) {
-            throw new ApiException("社团参加情况由班主任登记");
-        }
+        requireRole(user, "TEACHER", "ADMIN");
         Student s = mustStudent(studentId);
+        requireTeacherClass(user, s);
         return store.withLock(() -> {
             RideStatus r = rideOf(studentId);
             RideStatus u = new RideStatus(r.id(), r.date(), r.studentId(), r.classId(), r.routeId(),
@@ -394,8 +516,12 @@ public class SchoolBusService {
 
     // ================= 早晨站点点名 =================
 
-    public List<Map<String, Object>> morningRoster(String routeId) {
+    public List<Map<String, Object>> morningRoster(User viewer, String routeId) {
+        requireRole(viewer, "ATTENDANT", "ADMIN");
         mustRoute(routeId);
+        if ("ATTENDANT".equals(viewer.role()) && !viewer.scopeIds().contains(routeId)) {
+            throw new ForbiddenException("越权：只能查看您所属线路的早晨点名册");
+        }
         List<Map<String, Object>> rows = new ArrayList<>();
         for (RideStatus r : store.listRides(today())) {
             if (!ridingToday(r) || !effectiveRoute(r).equals(routeId)) continue;
@@ -409,6 +535,7 @@ public class SchoolBusService {
     }
 
     public Map<String, Object> markMorning(User attendant, String studentId, String status) {
+        requireRole(attendant, "ATTENDANT", "ADMIN");
         if (!List.of("BOARDED", "ABSENT_NO_SHOW", "LATE", "TEMP_BOARDED").contains(status)) {
             throw new ApiException("点名状态非法");
         }
@@ -416,6 +543,8 @@ public class SchoolBusService {
         return store.withLock(() -> {
             RideStatus r = rideOf(studentId);
             if (!ridingToday(r)) throw new ApiException("该生今天请假，不参与点名");
+            // scope：安全员只能给自己所属线路的学生点名（以当天有效线路为准）
+            requireRosterAccess(attendant, s, effectiveRoute(r));
             // 已存在处理中的"未上车"事件时，禁止重复创建（先于状态写入校验，保证同一份事实一致）
             Incident existing = openStudentIncident("NOT_BOARDED", studentId);
             if ("ABSENT_NO_SHOW".equals(status) && existing != null) {
@@ -463,18 +592,29 @@ public class SchoolBusService {
 
     /** 发现学生上错车（站在非本人线路车辆上）；若学生已赶到并补登其他点名状态，在原事件更新 */
     public Incident markWrongBus(User actor, String studentId, String vehicleId) {
+        requireRole(actor, "ATTENDANT", "ADMIN");
         Student s = mustStudent(studentId);
         Vehicle v = store.getVehicle(vehicleId);
         if (v == null) throw new ApiException("车辆不存在");
+        // scope：安全员必须属于学生有效线路或当前所在车辆线路之一
+        if ("ATTENDANT".equals(actor.role())) {
+            RideStatus cur = rideOf(studentId);
+            String studentRoute = effectiveRoute(cur);
+            if (!actor.scopeIds().contains(studentRoute) && !actor.scopeIds().contains(v.routeId())) {
+                throw new ForbiddenException("越权：该生与车辆均不在您负责的线路");
+            }
+        }
         return store.withLock(() -> {
             Incident existing = openStudentIncident("WRONG_BUS", studentId);
             if (existing != null) {
                 throw new ApiException("已存在处理中的「上错车」异常事件 #" + existing.id()
                         + "，请在原事件上更新进展");
             }
+            // 学生本线司乘与实际所在车辆线路司乘都要串进同一事件
+            LinkedHashSet<String> extra = new LinkedHashSet<>(partiesOf(s, effectiveRoute(rideOf(studentId))));
             return openIncident("WRONG_BUS", s, v.routeId(),
                     "车上（" + v.plate() + "）", actor,
-                    s.name() + " 上错车，当前在 " + v.plate() + "（" + mustRoute(v.routeId()).name() + "）", null);
+                    s.name() + " 上错车，当前在 " + v.plate() + "（" + mustRoute(v.routeId()).name() + "）", extra);
         });
     }
 
@@ -487,9 +627,7 @@ public class SchoolBusService {
         }
         Vehicle v = store.getVehicle(vehicleId);
         if (v == null) throw new ApiException("车辆不存在");
-        if ("DRIVER".equals(driver.role()) && !driver.scopeIds().contains(vehicleId)) {
-            throw new ApiException("只能更新本人驾驶的车辆");
-        }
+        requireVehicleAccess(driver, v);
         return store.withLock(() -> {
             int delay = delayMinutes == null ? v.delayMinutes() : delayMinutes;
             Vehicle u = new Vehicle(v.id(), v.plate(), v.seats(), v.routeId(), v.driverUsername(),
@@ -542,8 +680,12 @@ public class SchoolBusService {
 
     // ================= 放学乘车名单 =================
 
-    public Map<String, Object> afternoonRoster(String routeId) {
+    public Map<String, Object> afternoonRoster(User viewer, String routeId) {
+        requireRole(viewer, "ATTENDANT", "ADMIN");
         mustRoute(routeId);
+        if ("ATTENDANT".equals(viewer.role()) && !viewer.scopeIds().contains(routeId)) {
+            throw new ForbiddenException("越权：只能查看您所属线路的放学名单");
+        }
         List<Map<String, Object>> riders = new ArrayList<>();
         List<Map<String, Object>> excluded = new ArrayList<>();
         for (RideStatus r : store.listRides(today())) {
@@ -582,6 +724,7 @@ public class SchoolBusService {
     }
 
     public Map<String, Object> markAfternoon(User actor, String studentId, String status) {
+        requireRole(actor, "ATTENDANT", "ADMIN");
         if (!List.of("ONBOARD", "DELIVERED", "NOT_BOARDED", "NO_PICKUP", "WRONG_BUS").contains(status)) {
             throw new ApiException("放学点名状态非法");
         }
@@ -589,6 +732,7 @@ public class SchoolBusService {
         return store.withLock(() -> {
             RideStatus r = rideOf(studentId);
             if (!ridingToday(r)) throw new ApiException("该生今天请假");
+            requireRosterAccess(actor, s, effectiveRoute(r));
             if (List.of("NO_PICKUP", "NOT_BOARDED", "WRONG_BUS").contains(status)) {
                 Incident existing = openStudentIncident(status, studentId);
                 if (existing != null) {
@@ -631,7 +775,9 @@ public class SchoolBusService {
 
     /** 家长手动登记临时变更接送人（先变更、后串联五方的场景） */
     public Incident reportPickupChange(User actor, String studentId, String description) {
+        requireRole(actor, "PARENT", "ADMIN");
         Student s = mustStudent(studentId);
+        requireParentChild(actor, s);
         return store.withLock(() -> {
             RideStatus r = rideOf(studentId);
             String routeId = effectiveRoute(r);
@@ -640,9 +786,11 @@ public class SchoolBusService {
         });
     }
 
-    /** 家长确认孩子已接到 */
-    public RideStatus parentConfirm(String studentId) {
+    /** 家长确认孩子已接到（仅本人监护学生） */
+    public RideStatus parentConfirm(User user, String studentId) {
+        requireRole(user, "PARENT", "ADMIN");
         Student s = mustStudent(studentId);
+        requireParentChild(user, s);
         return store.withLock(() -> {
             RideStatus r = rideOf(studentId);
             RideStatus u = new RideStatus(r.id(), r.date(), r.studentId(), r.classId(), r.routeId(),
@@ -667,29 +815,69 @@ public class SchoolBusService {
 
     // ================= 异常事件 =================
 
-    public List<Incident> incidents(String status, String routeId) {
-        return store.listIncidents().stream()
+    public List<Incident> incidents(User viewer, String status, String routeId) {
+        return visibleIncidents(viewer).stream()
                 .filter(i -> status == null || status.isBlank() || status.equals(i.status()))
                 .filter(i -> routeId == null || routeId.isBlank() || routeId.equals(i.routeId()))
                 .toList();
     }
 
+    /** 事件可见性：管理员全部；其余角色必须是该事件通知的接收方（即被串联进同一事件的五方人员） */
+    public List<Incident> visibleIncidents(User viewer) {
+        if ("ADMIN".equals(viewer.role())) return store.listIncidents();
+        java.util.Set<Long> mine = new java.util.HashSet<>();
+        for (Notification n : store.listNotificationsByUser(viewer.username())) {
+            if (n.incidentId() != null) mine.add(n.incidentId());
+        }
+        return store.listIncidents().stream().filter(i -> mine.contains(i.id())).toList();
+    }
+
+    public List<ChangeRequest> visibleRequests(User viewer) {
+        if ("ADMIN".equals(viewer.role())) return store.listRequests();
+        if ("DRIVER".equals(viewer.role())) return List.of();
+        return store.listRequests().stream().filter(cr -> {
+            Student s = store.getStudent(cr.studentId());
+            if (s == null) return false;
+            return switch (viewer.role()) {
+                case "PARENT" -> viewer.username().equals(cr.parentUsername());
+                case "TEACHER" -> viewer.scopeIds().contains(s.classId());
+                case "ATTENDANT" -> viewer.scopeIds().contains(s.routeId())
+                        || (cr.targetRouteId() != null && viewer.scopeIds().contains(cr.targetRouteId()));
+                default -> false;
+            };
+        }).toList();
+    }
+
+    private Incident requireViewIncident(User viewer, long id) {
+        Incident i = incident(id);
+        requireIncidentAccess(viewer, i);
+        return i;
+    }
+
+    /** 内部按主键取事件（不做鉴权），供同事务内的写流程使用 */
     public Incident incident(long id) {
         Incident i = store.getIncident(id);
         if (i == null) throw new ApiException("事件不存在");
         return i;
     }
 
-    public List<Notification> incidentReceipts(long incidentId) {
-        incident(incidentId);
+    public Incident viewIncident(User viewer, long id) {
+        return requireViewIncident(viewer, id);
+    }
+
+    public List<Notification> incidentReceipts(User viewer, long incidentId) {
+        requireViewIncident(viewer, incidentId);
         return store.listNotificationsByIncident(incidentId);
     }
 
     public Incident appendAction(User actor, long incidentId, String action) {
+        requireRole(actor, "ADMIN", "DRIVER", "ATTENDANT", "TEACHER", "PARENT");
         if (action == null || action.isBlank()) throw new ApiException("处理动作不能为空");
+        Incident gate = incident(incidentId);
+        requireIncidentAccess(actor, gate);
+        if ("RESOLVED".equals(gate.status())) throw new ApiException("事件已关闭，不能再更新");
         return store.withLock(() -> {
             Incident inc = incident(incidentId);
-            if ("RESOLVED".equals(inc.status())) throw new ApiException("事件已关闭，不能再更新");
             appendTimeline(inc, actor, action);
             notif.broadcast("ACTION:" + incidentId, incidentId, partiesOfIncident(inc),
                     "事件进展 #" + incidentId, actor.name() + "：" + action);
@@ -697,8 +885,15 @@ public class SchoolBusService {
         });
     }
 
+    /** 催办未回执方：仅校车管理员（学校核对回执的动作） */
+    public int nudge(User actor, long incidentId) {
+        requireRole(actor, "ADMIN");
+        incident(incidentId);
+        return notif.nudge(incidentId);
+    }
+
     public ArchiveEntry resolve(User admin, long incidentId, String resolution, String responsibility) {
-        if (!"ADMIN".equals(admin.role())) throw new ApiException("仅校车管理员可以关闭事件");
+        requireRole(admin, "ADMIN");
         if (resolution == null || resolution.isBlank()) throw new ApiException("必须填写处理结果");
         if (responsibility == null || responsibility.isBlank()) throw new ApiException("必须填写责任结论");
         return store.withLock(() -> {
@@ -749,15 +944,33 @@ public class SchoolBusService {
         });
     }
 
-    public List<ArchiveEntry> archives(String studentId) {
-        if (studentId != null && !studentId.isBlank()) return store.listArchivesByStudent(studentId);
-        return store.listArchives();
+    public List<ArchiveEntry> archives(User viewer, String studentId) {
+        requireRole(viewer, "ADMIN", "TEACHER", "PARENT");
+        if ("ADMIN".equals(viewer.role())) {
+            if (studentId != null && !studentId.isBlank()) return store.listArchivesByStudent(studentId);
+            return store.listArchives();
+        }
+        // 班主任仅授权班级；家长仅本人监护学生
+        if (studentId != null && !studentId.isBlank()) {
+            Student s = mustStudent(studentId);
+            requireParentChild(viewer, s);
+            requireTeacherClass(viewer, s);
+            return store.listArchivesByStudent(studentId);
+        }
+        return store.listArchives().stream().filter(a -> {
+            Student s = store.getStudent(a.studentId());
+            if (s == null) return false;
+            return "PARENT".equals(viewer.role())
+                    ? viewer.scopeIds().contains(s.id())
+                    : viewer.scopeIds().contains(s.classId());
+        }).toList();
     }
 
     // ================= 复盘 / 统一事实 =================
 
-    /** 异常高发站点复盘：按线路→站点统计异常次数与类型分布 */
-    public Map<String, Object> hotspotReview(String routeId) {
+    /** 异常高发站点复盘：仅校车管理员（可按线路过滤） */
+    public Map<String, Object> hotspotReview(User viewer, String routeId) {
+        requireRole(viewer, "ADMIN");
         List<Incident> all = store.listIncidents().stream()
                 .filter(i -> routeId == null || routeId.isBlank() || routeId.equals(i.routeId()))
                 .toList();

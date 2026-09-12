@@ -547,7 +547,7 @@ async function openIncident(id){
     ${i.status==='OPEN'?`
     <div class="row"><input id="inc-action" style="flex:1" placeholder="登记处置进展，如：已电话联系家长，孩子在小区门口等候">
       <button class="btn ghost" onclick="addAction(${i.id})">追加进展并同步各方</button>
-      <button class="btn warn" onclick="nudge(${i.id})">📣 催办未回执方</button></div>
+      ${S.user.role==='ADMIN'?`<button class="btn warn" onclick="nudge(${i.id})">📣 催办未回执方</button>`:''}</div>
     <h3 style="margin-top:14px">关闭事件并归入学生乘车档案</h3>
     <textarea id="resolution" placeholder="处理结果（通知记录、定位、点名、家长确认均将归档）"></textarea>
     <textarea id="responsibility" placeholder="责任结论，如：家长忘记站点时间，已约定明日提前 10 分钟到站；校方无责"></textarea>
