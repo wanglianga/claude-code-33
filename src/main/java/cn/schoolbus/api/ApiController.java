@@ -196,10 +196,21 @@ public class ApiController {
 
     @GetMapping("/incidents/{id}")
     public Map<String, Object> incident(HttpServletRequest req, @PathVariable long id) {
-        Map<String, Object> d = new LinkedHashMap<>();
-        d.put("incident", svc.viewIncident(me(req), id));
-        d.put("receipts", svc.incidentReceipts(me(req), id));
-        return ok(d);
+        return ok(svc.incidentDetail(me(req), id));
+    }
+
+    /** 上错车处置方案：执行某一步并同步五方处理进度 */
+    @PostMapping("/incidents/{id}/plan-step")
+    public Map<String, Object> planStep(HttpServletRequest req, @PathVariable long id,
+                                        @RequestBody Map<String, Object> body) {
+        int step = Integer.parseInt(String.valueOf(body.getOrDefault("step", "0")));
+        return ok(svc.executePlanStep(me(req), id, step, str(body, "note")));
+    }
+
+    /** 管理员滚动到下一运营日（上错车复盘后联动次日名单） */
+    @PostMapping("/admin/roll-day")
+    public Map<String, Object> rollDay(HttpServletRequest req) {
+        return ok(svc.rollNextDay(me(req)));
     }
 
     @PostMapping("/incidents/{id}/action")
@@ -221,7 +232,8 @@ public class ApiController {
     @PostMapping("/incidents/{id}/resolve")
     public Map<String, Object> resolve(HttpServletRequest req, @PathVariable long id,
                                        @RequestBody Map<String, Object> body) {
-        return ok(svc.resolve(me(req), id, str(body, "resolution"), str(body, "responsibility")));
+        return ok(svc.resolve(me(req), id, str(body, "resolution"), str(body, "responsibility"),
+                str(body, "rootCause"), str(body, "prevention")));
     }
 
     // ---------- 通知回执 ----------

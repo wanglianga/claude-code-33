@@ -428,12 +428,25 @@ function pAfternoon(){
 function fillRosters(){
   if(currentTab==='am'&&$('am-route')){
     const rid=$('am-route').value;$('am-route').onchange=fillRosters;
-    const rows=S.facts.facts.filter(f=>f.ride.changeType!=='LEAVE'&&f.effectiveRouteId===rid);
     const route=S.routes.find(r=>r.id===rid);
+    const rows=S.facts.facts.filter(f=>f.ride.changeType!=='LEAVE'&&f.effectiveRouteId===rid);
+    // 次日重点关注：上错车复盘联动，置顶核对、高亮、强提醒
+    const watch=rows.filter(f=>f.watch);
     const byStop={};route.stops.forEach(st=>byStop[st]=[]);
     rows.forEach(f=>(byStop[f.morningStop]??=[]).push(f));
-    $('am-list').innerHTML=route.stops.map(st=>{
-      const list=byStop[st]||[];if(!list.length)return '';
+    const watchBanner=watch.length?`<div class="card" style="border:2px solid var(--purple);background:#f6f3ff;margin-bottom:6px">
+      <h3 style="color:var(--purple)">⭐ 次日重点关注 · 上车前逐个核对（${watch.length}人，上一日上错车复盘联动）</h3>
+      <table><tr><th>学生</th><th>站点</th><th>复盘提醒</th><th>点名</th></tr>
+      ${watch.map(f=>{const s=student(f.studentId);return `<tr style="background:#f3efff">
+        <td><b>${esc(s.name)}</b> <span class="tag t-purple">重点</span></td>
+        <td>${esc(f.morningStop)}</td>
+        <td class="small care">${esc(f.watchReason||'前一日上错车，先核对学生与本车牌/名册')}</td>
+        <td class="btns">
+          <button class="btn ok sm" onclick="markM('${s.id}','BOARDED')">已上车</button>
+          <button class="btn danger sm" onclick="markM('${s.id}','ABSENT_NO_SHOW')">未到</button>
+        </td></tr>`;}).join('')}</table></div>`:'';
+    $('am-list').innerHTML=watchBanner+route.stops.map(st=>{
+      const list=(byStop[st]||[]).filter(f=>!f.watch);if(!list.length)return '';
       return `<h3 style="margin-top:14px">📍 ${esc(st)} <span class="tag t-gray">${list.length}人</span></h3>
       <table><tr><th>学生</th><th>班级</th><th>变更</th><th>家长备注</th><th>当前状态</th><th>点名</th></tr>
       ${list.map(f=>{const s=student(f.studentId),r=f.ride;return `<tr>
@@ -464,8 +477,8 @@ function fillRosters(){
       </div>
       <table><tr><th>下车站点（顺序）</th><th>学生</th><th>接娃人</th><th>早晨状态</th><th>当前放学状态</th><th>操作</th></tr>
       ${riders.map(f=>{const s=student(f.studentId),r=f.ride;const pick=r.alternatePickupPerson?`<span class="tag t-purple">${esc(r.alternatePickupPerson)}（代接）</span>`:esc(s.pickupPerson);
-        return `<tr><td>${esc(f.afternoonStop)}</td>
-        <td><b>${esc(s.name)}</b> ${s.specialCare?'<span class="care">♿</span>':''}</td>
+        return `<tr ${f.watch?'style="background:#f3efff"':''}><td>${esc(f.afternoonStop)}</td>
+        <td><b>${esc(s.name)}</b> ${f.watch?'<span class="tag t-purple">⭐重点</span>':''} ${s.specialCare?'<span class="care">♿</span>':''}${f.watch?`<div class="small care">${esc(f.watchReason)}</div>`:''}</td>
         <td>${pick}</td><td>${mTag(r.morningStatus)}</td><td>${mTag(r.afternoonStatus)}</td>
         <td class="btns">
           <button class="btn ok sm" onclick="markA('${s.id}','ONBOARD')">已上车</button>
@@ -558,21 +571,32 @@ function pClass(){
 
 // ================= 管理员：统一事实 =================
 function pFacts(){
+  const wl=S.facts.facts.filter(f=>f.watch);
   return `<div class="grid g4" style="margin-bottom:14px">
     <div class="stat"><div class="v">${S.facts.facts.length}</div><div class="l">在档学生</div></div>
-    <div class="stat"><div class="v">${S.facts.facts.filter(f=>f.ride.changeType!=='LEAVE').length}</div><div class="l">今日乘车</div></div>
+    <div class="stat"><div class="v">${S.facts.facts.filter(f=>f.ride.changeType!=='LEAVE').length}</div><div class="l">当日乘车</div></div>
+    <div class="stat"><div class="v" style="color:var(--purple)">${S.facts.watchCount||0}</div><div class="l">当日重点关注（上错车复盘联动）</div></div>
     <div class="stat"><div class="v" style="color:var(--bad)">${S.incidents.filter(i=>i.status==='OPEN').length}</div><div class="l">处理中异常</div></div>
-    <div class="stat"><div class="v" style="color:var(--warn)">${S.facts.vehicles.filter(v=>v.status==='DELAYED').length}</div><div class="l">延误车辆</div></div>
   </div>
-  <div class="card"><h3>🔗 学生当天状态 × 车辆实时状态（所有人看到同一份事实）</h3>
-  <table><tr><th>学生</th><th>班级</th><th>早晨</th><th>放学</th><th>变更</th><th>实际线路</th><th>晚下车站</th><th>车辆（实时）</th><th>家长确认</th></tr>
-  ${S.facts.facts.map(f=>{const s=student(f.studentId),r=f.ride,v=f.vehicle;return `<tr>
+  <div class="card"><div class="row">
+    <h3 style="margin:0">🔗 运营日 ${S.facts.date} · 学生状态 × 车辆实时状态（同一份事实）</h3>
+    <span style="flex:1"></span>
+    <button class="btn warn sm" onclick="rollDay()">⏭ 滚动到下一运营日（生成次日名单，重点关注置顶高亮）</button>
+  </div>
+  ${wl.length?`<div style="margin:8px 0" class="small care">⭐ 当日重点关注：${wl.map(f=>esc(student(f.studentId).name)+'（'+esc(f.watchReason)+'）').join('；')}</div>`:''}
+  <table><tr><th>学生</th><th>班级</th><th>重点</th><th>早晨</th><th>放学</th><th>变更</th><th>实际线路</th><th>晚下车站</th><th>车辆（实时）</th><th>家长确认</th></tr>
+  ${S.facts.facts.map(f=>{const s=student(f.studentId),r=f.ride,v=f.vehicle;return `<tr ${f.watch?'style="background:#f3efff"':''}>
     <td><b>${esc(s.name)}</b> ${s.specialCare?'<span class="care">♿</span>':''}</td><td>${esc(s.className)}</td>
+    <td>${f.watch?'<span class="tag t-purple">⭐重点</span>':'<span class="muted">—</span>'}</td>
     <td>${mTag(r.morningStatus)}</td><td>${mTag(r.afternoonStatus)}</td>
     <td><span class="tag ${r.changeType==='NONE'?'t-gray':'t-purple'}">${CHANGE_NAME[r.changeType]}</span></td>
     <td>${esc(f.effectiveRouteName)}</td><td>${esc(f.afternoonStop)}</td>
     <td>${v?`${esc(v.plate)} <span class="tag ${v.status==='DELAYED'?'t-red':'t-green'}">${v.status==='DELAYED'?'延误'+v.delayMinutes+'分':v.status}</span>`:'—'}</td>
     <td>${r.parentConfirmed?'<span class="tag t-green">已确认</span>':'<span class="tag t-gray">未确认</span>'}</td></tr>`;}).join('')}</table></div>`;
+}
+async function rollDay(){
+  const d=await act('/admin/roll-day',{});
+  toast('已进入运营日 '+d.date+'，次日重点关注 '+d.watchCount+' 人已置顶高亮','ok');
 }
 
 // ================= 管理员：异常事件 =================
@@ -597,15 +621,18 @@ function pIncidents(){
 async function openIncident(id){
   const d=await api('/incidents/'+id);const i=d.incident,rc=d.receipts;
   const s=i.studentId?student(i.studentId):null;
-  const receiptRows={};
-  rc.forEach(n=>{(receiptRows[n.recipientUsername]??=[]).push(n);});
+  const isWB=i.type==='WRONG_BUS';
+  const plan=d.plan,sug=d.suggestedRootCause;
+  const planPanel=isWB?renderPlan(i,plan,sug,d.watchedNextDay,d.nextDay):'';
   $('modal-body').innerHTML=`<h3>🚨 事件 #${i.id} ${incTag(i.type)} ${i.status==='OPEN'?'<span class="tag t-red">处理中</span>':'<span class="tag t-green">已关闭</span>'}</h3>
     <div class="kv" style="margin-bottom:10px">
       <span class="k">涉及范围</span><span>${s?esc(s.name)+' '+esc(s.className):esc(routeName(i.routeId))+' 全车学生'}</span>
       <span class="k">线路站点</span><span>${esc(routeName(i.routeId))} ｜ ${esc(i.stop||'—')} ｜ ${esc(i.vehicleId||'')}</span>
       <span class="k">描述</span><span>${esc(i.description)}</span>
+      ${i.rootCause?`<span class="k">复盘根因</span><span><b>${rootCauseName(i.rootCause)}</b>${i.prevention?'<div class="small muted">次日防范：'+esc(i.prevention)+'</div>':''}</span>`:''}
       ${i.resolution?`<span class="k">处理结果</span><span>${esc(i.resolution)}</span><span class="k">责任结论</span><span><b>${esc(i.responsibility)}</b></span>`:''}
     </div>
+    ${planPanel}
     <h3>五方协同时间线</h3>
     <div class="timeline">${i.timeline.map(t=>`<div class="ti">${esc(t.action)}<div class="tt">${esc(t.at)} · ${esc(t.actor)}（${ROLE_NAME[t.actorRole]||t.actorRole}）</div></div>`).join('')}</div>
     <h3>同一信息的通知回执（家长 / 班主任 / 安全员是否都收到）</h3>
@@ -619,20 +646,58 @@ async function openIncident(id){
     <div class="row"><input id="inc-action" style="flex:1" placeholder="登记处置进展，如：已电话联系家长，孩子在小区门口等候">
       <button class="btn ghost" onclick="addAction(${i.id})">追加进展并同步各方</button>
       ${S.user.role==='ADMIN'?`<button class="btn warn" onclick="nudge(${i.id})">📣 催办未回执方</button>`:''}</div>
-    <h3 style="margin-top:14px">关闭事件并归入学生乘车档案</h3>
+    ${S.user.role==='ADMIN'?`
+    <h3 style="margin-top:14px">关闭事件、复盘并联动次日点名</h3>
+    ${isWB?renderRootCausePicker(sug):''}
     <textarea id="resolution" placeholder="处理结果（通知记录、定位、点名、家长确认均将归档）"></textarea>
-    <textarea id="responsibility" placeholder="责任结论，如：家长忘记站点时间，已约定明日提前 10 分钟到站；校方无责"></textarea>
-    <div class="row" style="margin-top:8px"><button class="btn ok" onclick="resolveInc(${i.id})">✔ 关闭事件并归档</button></div>`:'<div class="muted small">事件已关闭，归档可在「乘车档案」查看。</div>'}
+    <textarea id="responsibility" placeholder="责任结论，如：安全员未逐人核对，已通报；校方将在次日置顶核对该生"></textarea>
+    <div class="row" style="margin-top:8px"><button class="btn ok" onclick="resolveInc(${i.id},${isWB})">✔ 关闭事件、复盘并联动次日名单</button></div>`
+    :'<div class="muted small">事件处理中，处置进度五方实时同步；关闭与复盘由校车管理员完成。</div>'}`
+    :'<div class="muted small">事件已关闭，归档可在「乘车档案」查看。</div>'}
     <div class="row" style="margin-top:14px"><button class="btn ghost" onclick="closeModal()">关闭窗口</button></div>`;
   openModalRaw();
 }
+function rootCauseName(c){return {ROSTER_ERROR:'名单错误',ATTENDANT_MISS:'安全员漏核',TEMP_CHANGE_UNSYNC:'学生临时变更未同步'}[c]||c;}
+function renderPlan(i,plan,sug,watched,nextDay){
+  if(!plan)return '';
+  const done=plan.actions.filter(a=>a.status==='DONE').length;
+  return `<h3>🧭 上错车处置方案（依据点名时间/车辆定位/学生目的地/最近安全站点）</h3>
+  <div class="grid g4" style="margin-bottom:8px">
+    <div class="stat"><div class="l">发现时间（点名）</div><b style="font-size:13px">${esc(plan.detectedAt)}</b></div>
+    <div class="stat"><div class="l">误乘车 / 当前定位</div><b style="font-size:13px">${esc(plan.wrongVehiclePlate||'')} ${esc(plan.currentLocation||'')}</b></div>
+    <div class="stat"><div class="l">学生目的地</div><b style="font-size:13px">${esc(plan.correctRouteName)} · ${esc(plan.destinationStop)}</b></div>
+    <div class="stat"><div class="l">最近安全交接点</div><b style="font-size:13px">${esc(plan.nearestSafeStop)}</b></div>
+  </div>
+  <table><tr><th>#</th><th>责任方</th><th>处置动作</th><th>状态</th>${i.status==='OPEN'?'<th>操作</th>':''}</tr>
+  ${plan.actions.map(a=>`<tr>
+    <td><b>${a.step}</b></td><td><span class="tag t-blue">${ROLE_NAME[a.actor]||a.actor}</span></td>
+    <td class="small">${esc(a.action)}</td>
+    <td>${a.status==='DONE'?`<span class="tag t-green">已完成</span><div class="small muted">${esc(a.doneBy||'')} ${esc((a.doneAt||'').slice(5,16))}</div>`:'<span class="tag t-amber">待执行</span>'}</td>
+    ${i.status==='OPEN'?`<td>${a.status!=='DONE'?`<button class="btn ok sm" onclick="doPlanStep(${i.id},${a.step})">标记完成并同步进度</button>`:'—'}</td>`:''}
+  </tr>`).join('')}</table>
+  <div class="small muted" style="margin:6px 0">进度 ${done}/${plan.actions.length} 步；每步完成都会通知该事件五方，班主任与家长可同步看到。</div>
+  ${watched?`<div class="tag t-purple">已加入 ${esc(nextDay)} 次日重点关注名单</div>`:''}
+  ${sug&&i.status==='OPEN'?`<div class="small" style="margin-top:6px">系统建议根因：<b>${esc(sug.name)}</b>（${esc(sug.reason)}）</div>`:''}
+  <div style="height:8px"></div>`;
+}
+function renderRootCausePicker(sug){
+  const def=sug?sug.code:'ATTENDANT_MISS';
+  return `<div class="row"><label>复盘根因</label>
+    <select id="rootCause">
+      <option value="ROSTER_ERROR" ${def==='ROSTER_ERROR'?'selected':''}>名单错误</option>
+      <option value="ATTENDANT_MISS" ${def==='ATTENDANT_MISS'?'selected':''}>安全员漏核</option>
+      <option value="TEMP_CHANGE_UNSYNC" ${def==='TEMP_CHANGE_UNSYNC'?'selected':''}>学生临时变更未同步</option>
+    </select><span class="small muted">关闭后影响次日点名校验：排序提前、安全员强提醒、名单高亮</span></div>`;
+}
+async function doPlanStep(id,step){await act('/incidents/'+id+'/plan-step',{step,note:''});toast('第'+step+'步完成，处理进度已同步班主任与家长','ok');await openIncident(id);}
 async function addAction(id){const v=$('inc-action').value;if(!v)return;await act('/incidents/'+id+'/action',{action:v});$('inc-action').value='';toast('进展已同步事件各方','ok');await openIncident(id);}
 async function nudge(id){const d=await act('/incidents/'+id+'/nudge',null);toast('已向 '+d.resent+' 位未回执方再次推送','ok');await openIncident(id);}
-async function resolveInc(id){
+async function resolveInc(id,isWB){
   const resolution=$('resolution').value,responsibility=$('responsibility').value;
   if(!resolution||!responsibility){toast('处理结果与责任结论均为必填','err');return;}
-  await act('/incidents/'+id+'/resolve',{resolution,responsibility});
-  closeModal();toast('事件已关闭，通知/定位/点名/家长确认/责任结论已归档','ok');
+  const rootCause=isWB?$('rootCause').value:'';
+  await act('/incidents/'+id+'/resolve',{resolution,responsibility,rootCause});
+  closeModal();toast('事件已关闭并复盘，学生已加入次日重点关注名单','ok');
 }
 
 // ================= 管理员：回执核对 =================
@@ -659,17 +724,18 @@ function pReceipt(){
 function pArchive(){
   if(!S.archives){return '<div class="card muted">加载中…</div>';}
   return `<div class="card"><h3>🗂 学生乘车档案（事件关闭后归档）</h3>
-  <table><tr><th>归档时间</th><th>日期</th><th>学生</th><th>事件</th><th>早晨/放学点名</th><th>家长确认</th><th>车辆定位快照</th><th>处理结果</th><th>责任结论</th><th>通知记录</th></tr>
+  <table><tr><th>归档时间</th><th>日期</th><th>学生</th><th>事件</th><th>复盘根因</th><th>早晨/放学点名</th><th>家长确认</th><th>车辆定位快照</th><th>处理结果</th><th>责任结论</th><th>通知记录</th></tr>
   ${S.archives.map(a=>{const s=student(a.studentId);return `<tr>
     <td class="small muted">${a.archivedAt.slice(5,16)}</td><td>${a.date}</td>
     <td><b>${esc(s?.name)}</b><div class="small muted">${esc(s?.className)}</div></td>
     <td>#${a.incidentId} ${incTag(a.incidentType)}</td>
+    <td>${a.rootCause?`<span class="tag t-purple">${rootCauseName(a.rootCause)}</span>`:'<span class="muted">—</span>'}</td>
     <td class="small">${mTag(a.morningStatus)} ${mTag(a.afternoonStatus)}</td>
     <td>${a.parentConfirmed?'<span class="tag t-green">已确认</span>':'<span class="tag t-amber">未确认</span>'}</td>
     <td class="small muted" style="max-width:220px">${esc(a.vehicleSnapshot)}</td>
     <td class="small" style="max-width:200px">${esc(a.resolution)}</td>
     <td class="small"><b>${esc(a.responsibility)}</b></td>
-    <td class="small">${(a.notificationIds||[]).length} 条</td></tr>`;}).join('')||'<tr><td colspan="10" class="muted">暂无归档（关闭异常事件后自动生成）</td></tr>'}</table></div>`;
+    <td class="small">${(a.notificationIds||[]).length} 条</td></tr>`;}).join('')||'<tr><td colspan="11" class="muted">暂无归档（关闭异常事件后自动生成）</td></tr>'}</table></div>`;
 }
 
 // ================= 复盘 =================

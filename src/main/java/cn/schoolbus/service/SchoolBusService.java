@@ -33,8 +33,9 @@ public class SchoolBusService {
         return LocalDateTime.now().format(TS);
     }
 
+    /** 当前运营日期（可由管理员滚动到次日，用于上错车复盘联动次日名单） */
     private String today() {
-        return LocalDate.now().toString();
+        return store.getOpsDate();
     }
 
     // ================= 登录 =================
@@ -837,15 +838,28 @@ public class SchoolBusService {
 
     private List<Map<String, Object>> buildMorningRoster(String routeId) {
         mustRoute(routeId);
+        String date = today();
+        Set<String> watch = store.listWatch(date);
         List<Map<String, Object>> rows = new ArrayList<>();
-        for (RideStatus r : store.listRides(today())) {
+        for (RideStatus r : store.listRides(date)) {
             if (!ridingToday(r) || !effectiveRoute(r).equals(routeId)) continue;
             Student s = mustStudent(r.studentId());
             Map<String, Object> row = studentRow(s, r);
             row.put("stop", effectiveStop(r, false));
+            if (watch.contains(s.id())) {
+                String reason = watchReason(s.id(), date);
+                row.put("watch", true);
+                row.put("watchReason", reason);
+                row.put("attendantReminder", "上一日上错车，务必先核对学生与本车牌/名册再放行上车：" + reason);
+            } else {
+                row.put("watch", false);
+            }
             rows.add(row);
         }
-        rows.sort(Comparator.comparing(m -> String.valueOf(m.get("stop"))));
+        // 上错车复盘联动：次日重点关注学生置顶，其余按站点
+        rows.sort(Comparator
+                .comparing((Map<String, Object> m) -> Boolean.FALSE.equals(m.get("watch")))
+                .thenComparing(m -> String.valueOf(m.get("stop"))));
         return rows;
     }
 
@@ -1002,9 +1016,11 @@ public class SchoolBusService {
 
     private Map<String, Object> buildAfternoonRoster(String routeId) {
         mustRoute(routeId);
+        String date = today();
+        Set<String> watch = store.listWatch(date);
         List<Map<String, Object>> riders = new ArrayList<>();
         List<Map<String, Object>> excluded = new ArrayList<>();
-        for (RideStatus r : store.listRides(today())) {
+        for (RideStatus r : store.listRides(date)) {
             Student s = mustStudent(r.studentId());
             Map<String, Object> row = studentRow(s, r);
             if ("LEAVE".equals(r.changeType())) {
@@ -1016,6 +1032,14 @@ public class SchoolBusService {
             }
             if (!effectiveRoute(r).equals(routeId)) continue;
             row.put("stop", effectiveStop(r, true));
+            if (watch.contains(s.id())) {
+                row.put("watch", true);
+                row.put("watchReason", watchReason(s.id(), date));
+                row.put("attendantReminder", "前一日上错车，放学再次核对学生上对车、下车站点与接娃人："
+                        + watchReason(s.id(), date));
+            } else {
+                row.put("watch", false);
+            }
             if (r.clubActivity()) {
                 row.put("excludeReason", "参加社团活动");
                 excluded.add(row);
@@ -1208,20 +1232,41 @@ public class SchoolBusService {
         return notif.nudge(incidentId);
     }
 
-    public ArchiveEntry resolve(User admin, long incidentId, String resolution, String responsibility) {
+    public ArchiveEntry resolve(User admin, long incidentId, String resolution, String responsibility,
+                                String rootCause, String prevention) {
         requireRole(admin, "ADMIN");
         if (resolution == null || resolution.isBlank()) throw new ApiException("必须填写处理结果");
         if (responsibility == null || responsibility.isBlank()) throw new ApiException("必须填写责任结论");
         return store.withLock(() -> {
             Incident inc = incident(incidentId);
             if ("RESOLVED".equals(inc.status())) throw new ApiException("事件已关闭");
+            String finalRootCause = inc.rootCause();
+            String finalPrevention = inc.prevention();
+            if ("WRONG_BUS".equals(inc.type())) {
+                finalRootCause = normalizeRootCause(rootCause);
+                finalPrevention = preventionForRootCause(finalRootCause);
+            } else if (rootCause != null && !rootCause.isBlank()) {
+                finalRootCause = rootCause.trim();
+                finalPrevention = prevention;
+            }
             List<Incident.TimelineItem> tl = new ArrayList<>(inc.timeline());
             tl.add(new Incident.TimelineItem(now(), admin.username(), admin.role(),
                     "关闭事件｜处理结果：" + resolution + "｜责任结论：" + responsibility));
+            if (finalRootCause != null) {
+                tl.add(new Incident.TimelineItem(now(), "SYSTEM", "ADMIN",
+                        "复盘根因：" + rootCauseName(finalRootCause) + "｜次日防范：" + finalPrevention));
+            }
             Incident done = new Incident(inc.id(), inc.openedAt(), now(), inc.type(), inc.date(),
                     inc.studentId(), inc.routeId(), inc.vehicleId(), inc.stop(), inc.openedBy(),
-                    inc.description(), "RESOLVED", tl, resolution, responsibility);
+                    inc.description(), "RESOLVED", tl, resolution, responsibility,
+                    inc.planJson(), finalRootCause, finalPrevention);
             store.saveIncident(done);
+
+            // 上错车复盘联动次日：把学生加入下一个运营日重点关注名单
+            if ("WRONG_BUS".equals(inc.type()) && inc.studentId() != null) {
+                String nextDay = LocalDate.parse(inc.date()).plusDays(1).toString();
+                store.addWatch(nextDay, inc.studentId());
+            }
 
             // 归档：线路级事件（延误）按车上每名学生分别入档；学生级事件入该生档案
             List<String> studentIds;
@@ -1244,7 +1289,7 @@ public class SchoolBusService {
                 RideStatus r = store.getRide(inc.date(), sid);
                 ArchiveEntry a = new ArchiveEntry(
                         inc.id() + ":" + sid, now(), inc.date(), sid, inc.id(), inc.type(),
-                        resolution, responsibility,
+                        resolution, responsibility, finalRootCause,
                         r == null ? "" : r.morningStatus(),
                         r == null ? "" : r.afternoonStatus(),
                         r == null ? null : r.parentConfirmed(),
@@ -1331,8 +1376,10 @@ public class SchoolBusService {
 
     /** 全量当天乘车事实（学生状态 × 车辆实时状态），各角色看到的是同一份 */
     public Map<String, Object> dailyFacts() {
+        String date = today();
+        Set<String> watch = store.listWatch(date);
         List<Map<String, Object>> rows = new ArrayList<>();
-        for (RideStatus r : store.listRides(today())) {
+        for (RideStatus r : store.listRides(date)) {
             Student s = store.getStudent(r.studentId());
             if (s == null) continue;
             Map<String, Object> row = studentRow(s, r);
@@ -1343,11 +1390,18 @@ public class SchoolBusService {
             row.put("morningStop", effectiveStop(r, false));
             row.put("afternoonStop", effectiveStop(r, true));
             row.put("vehicle", vehicleOfRoute(effRoute));
+            if (watch.contains(s.id())) {
+                row.put("watch", true);
+                row.put("watchReason", watchReason(s.id(), date));
+            } else {
+                row.put("watch", false);
+            }
             rows.add(row);
         }
         rows.sort(Comparator.comparing(m -> String.valueOf(m.get("studentNo"))));
         Map<String, Object> resp = new LinkedHashMap<>();
-        resp.put("date", today());
+        resp.put("date", date);
+        resp.put("watchCount", watch.size());
         resp.put("vehicles", vehicles());
         resp.put("facts", rows);
         return resp;
@@ -1385,8 +1439,10 @@ public class SchoolBusService {
         List<Incident.TimelineItem> tl = new ArrayList<>();
         tl.add(new Incident.TimelineItem(now(), opener.username(), opener.role(),
                 "创建事件：" + description));
+        String planJson = "WRONG_BUS".equals(type)
+                ? buildWrongBusPlan(studentId, routeId, vehicleId, stop) : null;
         Incident inc = new Incident(id, now(), null, type, today(), studentId, routeId, vehicleId,
-                stop, opener.username(), description, "OPEN", tl, null, null);
+                stop, opener.username(), description, "OPEN", tl, null, null, planJson, null, null);
         store.saveIncident(inc);
 
         notif.broadcast("INC:" + id, id, parties,
@@ -1402,7 +1458,8 @@ public class SchoolBusService {
         tl.add(new Incident.TimelineItem(now(), actorName, role, action));
         Incident u = new Incident(inc.id(), inc.openedAt(), inc.closedAt(), inc.type(), inc.date(),
                 inc.studentId(), inc.routeId(), inc.vehicleId(), inc.stop(), inc.openedBy(),
-                inc.description(), inc.status(), tl, inc.resolution(), inc.responsibility());
+                inc.description(), inc.status(), tl, inc.resolution(), inc.responsibility(),
+                inc.planJson(), inc.rootCause(), inc.prevention());
         store.saveIncident(u);
     }
 
@@ -1431,6 +1488,260 @@ public class SchoolBusService {
         m.put("studentNote", s.note());
         m.put("ride", r);
         return m;
+    }
+
+    // ================= 上错车追踪：处置方案 / 根因复盘 / 次日联动 =================
+
+    private static final com.fasterxml.jackson.databind.ObjectMapper JSON =
+            new com.fasterxml.jackson.databind.ObjectMapper().findAndRegisterModules();
+
+    /**
+     * 发现上错车时生成处置方案：依据点名时间、车辆定位、学生目的地、最近安全站点。
+     */
+    private String buildWrongBusPlan(String studentId, String wrongRouteId,
+                                     String wrongVehicleId, String currentStop) {
+        Student s = mustStudent(studentId);
+        RideStatus r = rideOf(studentId);
+        Vehicle wrongV = wrongVehicleId == null ? vehicleOfRoute(wrongRouteId) : store.getVehicle(wrongVehicleId);
+        Route wrongRt = mustRoute(wrongRouteId);
+        String correctRouteId = effectiveRoute(r);
+        Route correctRt = mustRoute(correctRouteId);
+        String destination = effectiveStop(r, true);
+
+        // 最近安全站点：两线共有站点优先（通常是学校），否则用当前车辆线路上离学校最近的终点站
+        List<String> common = new ArrayList<>(wrongRt.stops());
+        common.retainAll(correctRt.stops());
+        String safeStop = common.isEmpty()
+                ? wrongRt.stops().get(wrongRt.stops().size() - 1) : common.get(0);
+
+        String detectedAt = r.morningMarkedAt() != null ? r.morningMarkedAt() : now();
+        String attendant = wrongV == null ? "随车安全员" : mustUser(wrongV.attendantUsername()).name();
+        String driver = wrongV == null ? "司机" : mustUser(wrongV.driverUsername()).name();
+
+        List<Map<String, Object>> actions = new ArrayList<>();
+        actions.add(planStep(1, "ATTENDANT", attendant + " 立即在 " + (wrongV == null ? "车上" : wrongV.plate())
+                + " 核实行学生 " + s.name() + " 已在车上并安排前排就坐、安抚情绪，不得让其独自下车"));
+        actions.add(planStep(2, "DRIVER", driver + " 保持当前线路低速运行至最近安全站点「" + safeStop
+                + "」停靠，开启双闪，位置实时回传"));
+        actions.add(planStep(3, "ADMIN", "校车管理员同步联系 " + correctRt.name() + " 司机与安全员，"
+                + "安排在「" + safeStop + "」交接；班主任通知家长 " + s.parentPhone()));
+        actions.add(planStep(4, "ATTENDANT", "在「" + safeStop + "」由两线安全员当面交接，核对学生姓名/班级/目的地「"
+                + destination + "」，转交正确线路车辆"));
+        actions.add(planStep(5, "PARENT", "家长在目的地「" + destination + "」接回并在手机端确认；管理员随后复盘根因"));
+
+        Map<String, Object> plan = new LinkedHashMap<>();
+        plan.put("studentId", s.id());
+        plan.put("studentName", s.name());
+        plan.put("specialCare", s.specialCare());
+        plan.put("detectedAt", detectedAt);
+        plan.put("wrongVehicleId", wrongV == null ? null : wrongV.id());
+        plan.put("wrongVehiclePlate", wrongV == null ? null : wrongV.plate());
+        plan.put("wrongRouteName", wrongRt.name());
+        plan.put("currentLocation", wrongV == null ? currentStop : wrongV.locationText());
+        plan.put("correctRouteId", correctRouteId);
+        plan.put("correctRouteName", correctRt.name());
+        plan.put("destinationStop", destination);
+        plan.put("nearestSafeStop", safeStop);
+        plan.put("actions", actions);
+        try {
+            return JSON.writeValueAsString(plan);
+        } catch (Exception e) {
+            throw new IllegalStateException("处置方案生成失败", e);
+        }
+    }
+
+    private Map<String, Object> planStep(int step, String actor, String action) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("step", step);
+        m.put("actor", actor);
+        m.put("action", action);
+        m.put("status", "PENDING");
+        m.put("doneAt", null);
+        m.put("doneBy", null);
+        return m;
+    }
+
+    private User mustUser(String username) {
+        User u = store.getUser(username);
+        if (u == null) throw new ApiException("用户不存在: " + username);
+        return u;
+    }
+
+    /** 事件详情：含处置方案、建议根因、回执与次日重点关注标记（班主任/家长凭此看处理进度） */
+    public Map<String, Object> incidentDetail(User viewer, long incidentId) {
+        Incident inc = requireViewIncident(viewer, incidentId);
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("incident", inc);
+        if (inc.planJson() != null) {
+            try {
+                resp.put("plan", JSON.readValue(inc.planJson(), Map.class));
+            } catch (Exception ignored) { }
+            Student s = store.getStudent(inc.studentId());
+            if (s != null) resp.put("suggestedRootCause", suggestRootCause(s, inc.vehicleId()));
+        }
+        resp.put("receipts", store.listNotificationsByIncident(incidentId));
+        String nextDay = LocalDate.parse(inc.date()).plusDays(1).toString();
+        resp.put("watchedNextDay", store.listWatch(nextDay).contains(inc.studentId()));
+        resp.put("nextDay", nextDay);
+        return resp;
+    }
+
+    /** 执行处置方案中的一步：更新状态、写入时间线并同步五方，班主任与家长由此看到处理进度 */
+    @SuppressWarnings("unchecked")
+    public Map<String, Object> executePlanStep(User user, long incidentId, int stepIndex, String note) {
+        Incident gate = incident(incidentId);
+        requireIncidentAccess(user, gate);
+        if (!"WRONG_BUS".equals(gate.type())) throw new ApiException("该事件不是上错车事件");
+        if ("RESOLVED".equals(gate.status())) throw new ApiException("事件已关闭");
+        return store.withLock(() -> {
+            Incident inc = incident(incidentId);
+            Map<String, Object> plan;
+            try { plan = JSON.readValue(inc.planJson(), Map.class); }
+            catch (Exception e) { throw new ApiException("处置方案数据异常"); }
+            List<Map<String, Object>> actions = (List<Map<String, Object>>) plan.get("actions");
+            Map<String, Object> target = actions.stream()
+                    .filter(a -> ((Number) a.get("step")).intValue() == stepIndex).findFirst()
+                    .orElseThrow(() -> new ApiException("方案步骤不存在: " + stepIndex));
+            if ("DONE".equals(target.get("status"))) throw new ApiException("该步骤已完成");
+            // 步骤必须由其责任方角色执行（管理员可代办）
+            String actorRole = String.valueOf(target.get("actor"));
+            if (!"ADMIN".equals(user.role()) && !user.role().equals(actorRole)) {
+                throw new ForbiddenException("越权：该处置步骤应由" + roleName(actorRole) + "执行");
+            }
+            target.put("status", "DONE");
+            target.put("doneAt", now());
+            target.put("doneBy", user.username());
+            String newPlan;
+            try { newPlan = JSON.writeValueAsString(plan); }
+            catch (Exception e) { throw new IllegalStateException(e); }
+            Incident u2 = new Incident(inc.id(), inc.openedAt(), inc.closedAt(), inc.type(), inc.date(),
+                    inc.studentId(), inc.routeId(), inc.vehicleId(), inc.stop(), inc.openedBy(),
+                    inc.description(), inc.status(),
+                    appendToList(inc.timeline(), new Incident.TimelineItem(now(), user.username(),
+                            user.role(), "处置方案 第" + stepIndex + "步已完成：" + target.get("action")
+                            + (note == null || note.isBlank() ? "" : "（" + note + "）"))),
+                    inc.resolution(), inc.responsibility(), newPlan, inc.rootCause(), inc.prevention());
+            store.saveIncident(u2);
+            notif.broadcast("WB:STEP:" + incidentId + ":" + stepIndex, incidentId, partiesOfIncident(inc),
+                    "上错车处置进展 #" + incidentId + " 第" + stepIndex + "/5 步",
+                    "学生 " + plan.get("studentName") + " 的处置方案第 " + stepIndex
+                            + " 步已由 " + user.name() + " 完成：" + target.get("action"));
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("incident", store.getIncident(incidentId));
+            resp.put("plan", plan);
+            return resp;
+        });
+    }
+
+    private <T> List<T> appendToList(List<T> list, T item) {
+        List<T> l = new ArrayList<>(list);
+        l.add(item);
+        return l;
+    }
+
+    /**
+     * 复盘根因推断：
+     * 学生当天存在临时改乘/改点 → 变更未同步；学生本就在该车线路名册却上错 → 名单错误；
+     * 学生不在该车线路名册仍被放行上车 → 安全员漏核。
+     */
+    public Map<String, Object> suggestRootCause(Student s, String wrongVehicleId) {
+        RideStatus r = store.getRide(today(), s.id());
+        Vehicle v = wrongVehicleId == null ? null : store.getVehicle(wrongVehicleId);
+        String code;
+        String reason;
+        boolean tempChange = r != null && !"NONE".equals(r.changeType());
+        boolean onWrongRoster = v != null && r != null && effectiveRoute(r).equals(v.routeId());
+        if (tempChange) {
+            code = "TEMP_CHANGE_UNSYNC";
+            reason = "该生当天有临时改乘/改点（" + changeName(r.changeType()) + "），但孩子仍按旧线路上车，变更未同步到学生本人";
+        } else if (onWrongRoster) {
+            code = "ROSTER_ERROR";
+            reason = "该生当天有效线路即 " + (v == null ? "" : mustRoute(v.routeId()).name())
+                    + "，名单编排与实际目的地不一致，属名单错误";
+        } else {
+            code = "ATTENDANT_MISS";
+            reason = "该生不在 " + (v == null ? "该车辆" : mustRoute(v.routeId()).name())
+                    + " 名册内仍被放行上车，安全员上车前未逐人核对";
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("code", code);
+        m.put("name", rootCauseName(code));
+        m.put("reason", reason);
+        m.put("prevention", preventionForRootCause(code));
+        return m;
+    }
+
+    private String normalizeRootCause(String code) {
+        if (code == null || code.isBlank()) return "ATTENDANT_MISS";
+        return switch (code.trim()) {
+            case "ROSTER_ERROR", "ATTENDANT_MISS", "TEMP_CHANGE_UNSYNC" -> code.trim();
+            default -> throw new ApiException("根因类型非法");
+        };
+    }
+
+    public String rootCauseName(String code) {
+        return switch (code) {
+            case "ROSTER_ERROR" -> "名单错误";
+            case "ATTENDANT_MISS" -> "安全员漏核";
+            case "TEMP_CHANGE_UNSYNC" -> "学生临时变更未同步";
+            default -> code;
+        };
+    }
+
+    private String preventionForRootCause(String code) {
+        return switch (code) {
+            case "ROSTER_ERROR" -> "次日名单按当天有效线路重新生成并由两线安全员双人复核；该生在所属线路置顶高亮";
+            case "ATTENDANT_MISS" -> "次日该生上车站点顺序提前并强提醒，安全员逐人核对学生与车牌/名册，不在名册一律拦下";
+            case "TEMP_CHANGE_UNSYNC" -> "临时变更以家长+安全员双确认后的名单为准；次日点名时向该生口头重申新线路与站点，并在名册高亮";
+            default -> "次日加强该生点名核对";
+        };
+    }
+
+    private String changeName(String t) {
+        return switch (t) {
+            case "LEAVE" -> "请假";
+            case "CHANGE_BUS" -> "临时改乘";
+            case "CHANGE_STOP" -> "改下车点";
+            case "ALTERNATE_PICKUP" -> "他人代接";
+            default -> t;
+        };
+    }
+
+    /** 管理员滚动到下一运营日：为全部学生生成次日 PLANNED 乘车事实，返回次日重点关注名单 */
+    public Map<String, Object> rollNextDay(User admin) {
+        requireRole(admin, "ADMIN");
+        return store.withLock(() -> {
+            String next = LocalDate.parse(today()).plusDays(1).toString();
+            store.setOpsDate(next);
+            List<Map<String, Object>> watchRows = new ArrayList<>();
+            for (Student s : store.listStudents()) {
+                if (store.getRide(next, s.id()) == null) {
+                    store.saveRide(new RideStatus(s.id() + ":" + next, next, s.id(), s.classId(),
+                            s.routeId(), s.defaultStop(), "PLANNED", "PLANNED", "NONE", null, null, null,
+                            null, false, "", null, null, null, null, null, null, now(), 1));
+                }
+                if (store.listWatch(next).contains(s.id())) {
+                    Map<String, Object> row = studentRow(s, rideOf(s.id()));
+                    row.put("watchReason", watchReason(s.id(), next));
+                    watchRows.add(row);
+                }
+            }
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("date", next);
+            resp.put("watchCount", watchRows.size());
+            resp.put("watch", watchRows);
+            return resp;
+        });
+    }
+
+    private String watchReason(String studentId, String date) {
+        // 取前一天该生最近一次已复盘的上错车事件根因
+        String prev = LocalDate.parse(date).minusDays(1).toString();
+        return store.listIncidentsByStudent(studentId).stream()
+                .filter(i -> "WRONG_BUS".equals(i.type()) && "RESOLVED".equals(i.status())
+                        && prev.equals(i.date()) && i.rootCause() != null)
+                .map(i -> rootCauseName(i.rootCause()) + "：" + i.prevention())
+                .findFirst().orElse("前一日发生上错车，次日重点核对");
     }
 
     public String incidentName(String t) {

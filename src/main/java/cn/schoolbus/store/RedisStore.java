@@ -259,6 +259,32 @@ public class RedisStore {
         return out;
     }
 
+    // ---------- 运营日期（支持复盘后滚动到次日名单） ----------
+
+    public String getOpsDate() {
+        String d = redis.opsForValue().get("sb:ops:date");
+        return d == null || d.isBlank() ? java.time.LocalDate.now().toString() : d;
+    }
+
+    public void setOpsDate(String date) {
+        redis.opsForValue().set("sb:ops:date", date);
+    }
+
+    // ---------- 次日重点关注名单（上错车复盘联动） ----------
+
+    public void addWatch(String date, String studentId) {
+        redis.opsForSet().add("sb:watch:" + date, studentId);
+    }
+
+    public void removeWatch(String date, String studentId) {
+        redis.opsForSet().remove("sb:watch:" + date, studentId);
+    }
+
+    public java.util.Set<String> listWatch(String date) {
+        java.util.Set<String> s = redis.opsForSet().members("sb:watch:" + date);
+        return s == null ? java.util.Set.of() : s;
+    }
+
     // ---------- 运维 ----------
 
     @SuppressWarnings("unchecked")
