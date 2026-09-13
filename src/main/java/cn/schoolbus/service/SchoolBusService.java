@@ -281,6 +281,8 @@ public class SchoolBusService {
         String targetStop = body.getOrDefault("targetStop", "").trim();
         String altPerson = body.getOrDefault("alternatePickupPerson", "").trim();
         String reason = body.getOrDefault("reason", "").trim();
+        boolean wantWaitlist = "true".equalsIgnoreCase(body.getOrDefault("waitlist", ""))
+                || "1".equals(body.getOrDefault("waitlist", ""));
 
         return store.withLock(() -> {
             RideStatus ride = rideOf(studentId);
@@ -325,56 +327,172 @@ public class SchoolBusService {
                 }
             }
 
-            // ---- 线路容量 & 车辆座位（改乘才需要，申请学生本人不计入目标线路既有负载） ----
+            // ---- 改乘四项校验：车辆座位 / 同站点人数 / 绕行时间 / 随车安全员确认 ----
             String capacityCheck = "不涉及容量校验";
             String seatCheck = "不涉及座位校验";
-            boolean capacityOk = true, seatOk = true;
+            String stopCheck = "不涉及同站点校验";
+            String detourCheck = "不涉及绕行时间校验";
+            BusChangeEval eval = null;
             if ("CHANGE_BUS".equals(type)) {
-                Route tr = mustRoute(targetRouteId);
-                Vehicle tv = vehicleOfRoute(targetRouteId);
-                long aboard = plannedCount(targetRouteId); // 当前不含申请人（申请人还在原线路）
-                capacityOk = aboard + 1 <= tr.capacity();
-                capacityCheck = (capacityOk ? "容量通过：" : "容量不足：")
-                        + tr.name() + " 容量 " + tr.capacity() + " 人，当前计划 " + aboard
-                        + " 人，加入后 " + (aboard + 1) + " 人";
-                int seats = tv == null ? 0 : tv.seats();
-                seatOk = aboard + 1 <= seats;
-                seatCheck = (seatOk ? "座位通过：" : "座位不足：")
-                        + (tv == null ? "目标线路无值班车辆" : tv.plate() + " 共 " + seats + " 座")
-                        + "，加入后需 " + (aboard + 1) + " 座";
+                eval = evaluateBusChange(ride.routeId(), targetRouteId, targetStop);
+                capacityCheck = eval.capacityText;
+                seatCheck = eval.seatText;
+                stopCheck = eval.stopText;
+                detourCheck = eval.detourText;
             }
 
             long id = store.nextId("request");
             ChangeRequest cr = new ChangeRequest(id, now(), studentId, parent.username(), today(), type,
-                    targetRouteId, targetStop, altPerson, reason, "PENDING",
-                    capacityCheck, seatCheck, ruleCheck, null, null, null);
+                    targetRouteId, targetStop, altPerson, reason, "PENDING", false,
+                    capacityCheck, seatCheck, stopCheck, detourCheck, ruleCheck,
+                    null, null, null, null, null);
 
-            // 硬性校验不通过：系统直接驳回，不再占用安全员确认环节
-            if (!capacityOk || !seatOk) {
-                cr = new ChangeRequest(id, cr.createdAt(), studentId, parent.username(), today(), type,
-                        targetRouteId, targetStop, altPerson, reason, "REJECTED",
-                        capacityCheck, seatCheck, ruleCheck, "SYSTEM", now(),
-                        !capacityOk ? "线路容量不足，系统自动驳回" : "车辆座位不足，系统自动驳回");
+            // 容量/座位/同站点/绕行任一硬性校验不通过：家长可选择候补或放弃
+            if (eval != null && !eval.hardOk) {
+                // 绕行时间不随名额释放而改善，绕行超限只能放弃，不接受候补
+                boolean canWaitlist = eval.capacityOk == false || eval.seatOk == false || eval.stopOk == false;
+                if (wantWaitlist && eval.detourOk && canWaitlist) {
+                    int ahead = (int) store.listRequests().stream()
+                            .filter(x -> "WAITLIST".equals(x.status())
+                                    && x.targetRouteId().equals(targetRouteId))
+                            .count();
+                    cr = copyRequest(cr, "WAITLIST", true, null, null, null, null, null);
+                    store.saveRequest(cr);
+                    LinkedHashSet<String> admins = new LinkedHashSet<>(admins());
+                    Vehicle tv = vehicleOfRoute(targetRouteId);
+                    if (tv != null) { admins.add(tv.attendantUsername()); admins.add(tv.driverUsername()); }
+                    notif.broadcast("REQ:" + id + ":WAITLIST", null, admins,
+                            "已加入候补：" + s.name() + " 改乘" + mustRoute(targetRouteId).name(),
+                            "目标" + eval.failureSummary() + "，家长选择候补，当前候补序号 " + (ahead + 1)
+                                    + "。有名额释放时系统按序自动递补，并通知安全员确认。");
+                    return cr;
+                }
+                // 放弃改乘：记录为已取消，原线路乘车不变
+                cr = copyRequest(cr, "CANCELED", false, "SYSTEM", now(),
+                        "容量不足，家长选择放弃改乘：" + eval.failureSummary(), null, null);
                 store.saveRequest(cr);
-                notif.broadcast("REQ:" + id + ":REJECT", null,
-                        List.of(parent.username()), "申请未通过：" + typeName(type),
-                        "学生 " + s.name() + " 的" + typeName(type) + "申请因"
-                                + (!capacityOk ? "线路容量不足" : "车辆座位不足") + "未通过。");
+                notif.broadcast("REQ:" + id + ":CANCEL", null, List.of(parent.username()),
+                        "已放弃改乘：" + s.name(),
+                        "因" + eval.failureSummary() + "，本次改乘已取消，孩子仍按原线路乘车，无需其他操作。");
                 return cr;
             }
 
             store.saveRequest(cr);
 
-            // 通知目标线路安全员/司机 + 班主任 + 管理员，等待安全员确认
+            // 通知原线路 + 目标线路司机/安全员、班主任、管理员，等待目标线路安全员确认（双确认之一）
             LinkedHashSet<String> targets = partiesOf(s, targetForCapacity);
+            Vehicle homeV = vehicleOfRoute(ride.routeId());
+            if (homeV != null) { targets.add(homeV.driverUsername()); targets.add(homeV.attendantUsername()); }
             notif.broadcast("REQ:" + id + ":SUBMIT", null, targets,
                     "待确认：" + s.name() + " " + typeName(type) + "申请",
                     "家长提交【" + typeName(type) + "】" + requestDigest(cr)
-                            + "。请随车安全员核对容量、座位与校规后确认。");
+                            + "。座位/同站点/绕行/校规校验已通过，请目标线路随车安全员核对后确认；"
+                            + "通过后家长还需在手机端确认知悉，双方名单才会同步变更。");
             return cr;
         });
     }
 
+    /** 改乘四项硬性校验的评估结果 */
+    private static final class BusChangeEval {
+        boolean capacityOk, seatOk, stopOk, detourOk;
+        boolean hardOk;
+        String capacityText, seatText, stopText, detourText;
+        long aboard, sameStop;
+        String failureSummary() {
+            List<String> bad = new ArrayList<>();
+            if (!capacityOk) bad.add("线路容量不足");
+            if (!seatOk) bad.add("车辆座位不足");
+            if (!stopOk) bad.add("同站点人数超限");
+            if (!detourOk) bad.add("绕行时间超限");
+            return String.join("、", bad);
+        }
+    }
+
+    private BusChangeEval evaluateBusChange(String homeRouteId, String targetRouteId, String targetStop) {
+        return evaluateBusChange(homeRouteId, targetRouteId, targetStop, null);
+    }
+
+    /**
+     * 评估改乘可行性（excludeRequestId 为当前正在评估的申请，不计入预留，避免二次校验时重复计数）：
+     * 1) 车辆物理座位；2) 目标站点当天上/下车人数（含已确认中名额预留）；
+     * 3) 绕行时间（目标线路全程不得比原线路长 20 分钟以上）；线路容量单独展示。
+     */
+    private BusChangeEval evaluateBusChange(String homeRouteId, String targetRouteId, String targetStop,
+                                            Long excludeRequestId) {
+        Route tr = mustRoute(targetRouteId);
+        Vehicle tv = vehicleOfRoute(targetRouteId);
+        // 目标线路有效在乘（不含申请人）+ 已确认中但尚未生效（家长未完成双确认）的名额预留。
+        // 家长已确认的申请学生已通过 ride 改挂计入 plannedCount，不再重复预留。
+        long aboard = plannedCount(targetRouteId);
+        final Long exclude = excludeRequestId;
+        long reserved = store.listRequests().stream()
+                .filter(x -> "CHANGE_BUS".equals(x.type())
+                        && ("PENDING".equals(x.status())
+                                || ("APPROVED".equals(x.status()) && x.parentAckAt() == null))
+                        && targetRouteId.equals(x.targetRouteId())
+                        && (exclude == null || !exclude.equals(x.id())))
+                .count();
+        long demand = aboard + reserved;
+
+        BusChangeEval e = new BusChangeEval();
+        e.aboard = demand;
+        e.capacityOk = demand + 1 <= tr.capacity();
+        e.capacityText = (e.capacityOk ? "容量通过：" : "容量不足：")
+                + tr.name() + " 容量 " + tr.capacity() + " 人，当前计划 " + aboard
+                + " 人（含确认中预留 " + reserved + "），加入后 " + (demand + 1) + " 人";
+
+        int seats = tv == null ? 0 : tv.seats();
+        e.seatOk = tv != null && demand + 1 <= seats;
+        e.seatText = (e.seatOk ? "座位通过：" : "座位不足：")
+                + (tv == null ? "目标线路无值班车辆"
+                        : tv.plate() + " 共 " + seats + " 座，加入后需 " + (demand + 1) + " 座");
+
+        // 同站点：当天目标线路在该站上/下车的有效人数（含预留）
+        long sameStop = store.listRides(today()).stream()
+                .filter(this::ridingToday)
+                .filter(r -> effectiveRoute(r).equals(targetRouteId))
+                .filter(r -> targetStop.equals(effectiveStop(r, false))
+                        || targetStop.equals(effectiveStop(r, true)))
+                .count();
+        sameStop += store.listRequests().stream()
+                .filter(x -> "CHANGE_BUS".equals(x.type())
+                        && ("PENDING".equals(x.status())
+                                || ("APPROVED".equals(x.status()) && x.parentAckAt() == null))
+                        && targetRouteId.equals(x.targetRouteId()) && targetStop.equals(x.targetStop())
+                        && (exclude == null || !exclude.equals(x.id())))
+                .count();
+        e.sameStop = sameStop;
+        e.stopOk = sameStop + 1 <= tr.stopCapacity();
+        e.stopText = (e.stopOk ? "同站点通过：" : "同站点人数超限：")
+                + targetStop + " 当天在该站上/下车 " + sameStop + " 人，站点照护上限 "
+                + tr.stopCapacity() + " 人，加入后 " + (sameStop + 1) + " 人";
+
+        Route hr = mustRoute(homeRouteId);
+        int delta = tr.estMinutes() - hr.estMinutes();
+        e.detourOk = delta <= 20;
+        e.detourText = (e.detourOk ? "绕行通过：" : "绕行时间超限：")
+                + "原线路 " + hr.name() + " 约 " + hr.estMinutes() + " 分钟，目标线路 "
+                + tr.name() + " 约 " + tr.estMinutes() + " 分钟，绕行 "
+                + (delta >= 0 ? "+" : "") + delta + " 分钟（允许 +20 分钟以内）";
+
+        e.hardOk = e.capacityOk && e.seatOk && e.stopOk && e.detourOk;
+        return e;
+    }
+
+    private ChangeRequest copyRequest(ChangeRequest cr, String status, boolean waitlist,
+                                      String reviewedBy, String reviewedAt, String reviewNote,
+                                      String attendantAckAt, String parentAckAt) {
+        return new ChangeRequest(cr.id(), cr.createdAt(), cr.studentId(), cr.parentUsername(),
+                cr.date(), cr.type(), cr.targetRouteId(), cr.targetStop(), cr.alternatePickupPerson(),
+                cr.reason(), status, waitlist, cr.capacityCheck(), cr.seatCheck(), cr.stopCheck(),
+                cr.detourCheck(), cr.ruleCheck(), reviewedBy == null ? cr.reviewedBy() : reviewedBy,
+                reviewedAt == null ? cr.reviewedAt() : reviewedAt,
+                reviewNote == null ? cr.reviewNote() : reviewNote,
+                attendantAckAt == null ? cr.attendantAckAt() : attendantAckAt,
+                parentAckAt == null ? cr.parentAckAt() : parentAckAt);
+    }
+
+    /** 安全员确认改乘（双确认之一）：通过后进入待家长确认，原/目标线路名单暂不变 */
     public ChangeRequest reviewRequest(User reviewer, long id, boolean approve, String note) {
         requireRole(reviewer, "ATTENDANT", "ADMIN");
         return store.withLock(() -> {
@@ -390,27 +508,174 @@ public class SchoolBusService {
                 }
             }
 
-            String status = approve ? "APPROVED" : "REJECTED";
-            ChangeRequest done = new ChangeRequest(cr.id(), cr.createdAt(), cr.studentId(),
-                    cr.parentUsername(), cr.date(), cr.type(), cr.targetRouteId(), cr.targetStop(),
-                    cr.alternatePickupPerson(), cr.reason(), status,
-                    cr.capacityCheck(), cr.seatCheck(), cr.ruleCheck(),
-                    reviewer.username(), now(), note);
-            store.saveRequest(done);
-
-            if (approve) {
-                applyApprovedRequest(s, done);
+            if (!approve) {
+                ChangeRequest done = copyRequest(cr, "REJECTED", false,
+                        reviewer.username(), now(), note, null, null);
+                store.saveRequest(done);
+                LinkedHashSet<String> parties = partiesOf(s,
+                        cr.targetRouteId().isBlank() ? s.routeId() : cr.targetRouteId());
+                notif.broadcast("REQ:" + id + ":REJECT", null, parties,
+                        "申请已驳回：" + typeName(cr.type()),
+                        "学生 " + s.name() + " 的" + typeName(cr.type()) + "申请已被"
+                                + reviewer.name() + "驳回"
+                                + (note == null || note.isBlank() ? "" : "，备注：" + note)
+                                + "。孩子仍按原线路乘车。");
+                return done;
             }
 
-            LinkedHashSet<String> parties = partiesOf(s,
-                    cr.targetRouteId().isBlank() ? s.routeId() : cr.targetRouteId());
-            notif.broadcast("REQ:" + id + ":" + status, null, parties,
-                    (approve ? "申请已通过：" : "申请已驳回：") + typeName(cr.type()),
-                    "学生 " + s.name() + " 的" + typeName(cr.type()) + "申请已被"
-                            + reviewer.name() + (approve ? "确认通过" : "驳回")
-                            + (note == null || note.isBlank() ? "" : "，备注：" + note));
+            // 安全员确认前再次校验（可能提交后名额已被占用；排除自身预留，避免重复计数）
+            if ("CHANGE_BUS".equals(cr.type())) {
+                BusChangeEval re = evaluateBusChange(s.routeId(), cr.targetRouteId(), cr.targetStop(), cr.id());
+                if (!re.hardOk) {
+                    ChangeRequest wl = copyRequest(cr, "WAITLIST", true, reviewer.username(), now(),
+                            "安全员确认时名额已满：" + re.failureSummary() + "，自动转入候补", null, null);
+                    store.saveRequest(wl);
+                    notif.broadcast("REQ:" + id + ":TO_WAITLIST", null, List.of(cr.parentUsername()),
+                            "改乘转为候补：" + s.name(),
+                            "安全员确认时" + re.failureSummary() + "，申请已自动转入候补，释放名额后按序递补。");
+                    return wl;
+                }
+            }
+
+            // 非改乘申请：安全员确认即生效
+            if (!"CHANGE_BUS".equals(cr.type())) {
+                ChangeRequest done = copyRequest(cr, "APPROVED", false,
+                        reviewer.username(), now(), note, now(), null);
+                store.saveRequest(done);
+                applyApprovedRequest(s, done);
+                // 请假释放名额后，尝试递补本线候补
+                if ("LEAVE".equals(cr.type())) promoteWaitlist(s.routeId());
+                LinkedHashSet<String> parties = partiesOf(s, s.routeId());
+                notif.broadcast("REQ:" + id + ":APPROVE", null, parties,
+                        "申请已通过：" + typeName(cr.type()),
+                        "学生 " + s.name() + " 的" + typeName(cr.type()) + "申请已被" + reviewer.name()
+                                + "确认通过，乘车安排已更新。");
+                return done;
+            }
+
+            // 改乘：安全员确认完成（第一确认），等待家长确认知悉（第二确认）后名单才变更
+            ChangeRequest done = copyRequest(cr, "APPROVED", false,
+                    reviewer.username(), now(), note, now(), null);
+            store.saveRequest(done);
+            LinkedHashSet<String> parties = partiesOf(s, cr.targetRouteId());
+            Vehicle homeV = vehicleOfRoute(s.routeId());
+            if (homeV != null) { parties.add(homeV.driverUsername()); parties.add(homeV.attendantUsername()); }
+            notif.broadcast("REQ:" + id + ":ATT_ACK", id, parties,
+                    "安全员已确认，等待家长确认：" + s.name() + " 改乘",
+                    "目标线路随车安全员 " + reviewer.name() + " 已确认。请家长在手机端点击「确认知悉改乘」，"
+                            + "双方名单（原线路移除 / 目标线路加入）将在家长确认后立即同步给司机与安全员。");
             return done;
         });
+    }
+
+    /** 家长确认知悉改乘（双确认之二）：双方名单在此刻同步变更 */
+    public ChangeRequest parentAckRequest(User user, long id) {
+        requireRole(user, "PARENT", "ADMIN");
+        return store.withLock(() -> {
+            ChangeRequest cr = store.getRequest(id);
+            if (cr == null) throw new ApiException("申请不存在");
+            Student s = mustStudent(cr.studentId());
+            requireParentChild(user, s);
+            if (!"CHANGE_BUS".equals(cr.type())) throw new ApiException("仅临时改乘申请需要家长确认");
+            if (!"APPROVED".equals(cr.status())) {
+                throw new ApiException("申请当前状态为「" + requestStatusName(cr.status()) + "」，暂不能确认");
+            }
+            if (cr.attendantAckAt() == null) throw new ApiException("安全员尚未确认，请等待安全员确认");
+            if (cr.parentAckAt() != null) throw new ApiException("您已确认过改乘，名单已同步");
+
+            // 家长确认时最后再校验一次容量（极短窗口内被其他候补占用时转候补；排除自身预留）
+            BusChangeEval re = evaluateBusChange(s.routeId(), cr.targetRouteId(), cr.targetStop(), cr.id());
+            if (!re.hardOk) {
+                ChangeRequest wl = copyRequest(cr, "WAITLIST", true, cr.reviewedBy(), cr.reviewedAt(),
+                        "家长确认时名额已被占用：" + re.failureSummary() + "，自动转入候补",
+                        cr.attendantAckAt(), null);
+                store.saveRequest(wl);
+                notif.broadcast("REQ:" + id + ":TO_WAITLIST", null, List.of(cr.parentUsername()),
+                        "改乘转为候补：" + s.name(), "确认时" + re.failureSummary() + "，已自动转入候补。");
+                return wl;
+            }
+
+            ChangeRequest done = copyRequest(cr, "APPROVED", false,
+                    cr.reviewedBy(), cr.reviewedAt(), cr.reviewNote(), cr.attendantAckAt(), now());
+            store.saveRequest(done);
+            // 双方名单同步：学生改挂目标线路
+            applyApprovedRequest(s, done);
+            // 通知原线路 + 目标线路司机和安全员：名单已即时变更
+            LinkedHashSet<String> crews = new LinkedHashSet<>();
+            Vehicle homeV = vehicleOfRoute(s.routeId());
+            Vehicle targetV = vehicleOfRoute(cr.targetRouteId());
+            if (homeV != null) { crews.add(homeV.driverUsername()); crews.add(homeV.attendantUsername()); }
+            if (targetV != null) { crews.add(targetV.driverUsername()); crews.add(targetV.attendantUsername()); }
+            String teacher = teacherOfClass(s.classId());
+            if (teacher != null) crews.add(teacher);
+            crews.addAll(admins());
+            notif.broadcast("REQ:" + id + ":PARENT_ACK", id, crews,
+                    "改乘已生效（双确认完成）：" + s.name(),
+                    "家长已确认知悉。" + s.name() + " 已从 " + mustRoute(s.routeId()).name()
+                            + " 名单移除，加入 " + mustRoute(cr.targetRouteId()).name() + "（"
+                            + cr.targetStop() + " 站），司机端与安全员端名册已即时更新，"
+                            + "请勿再让该生乘坐原线路车辆。");
+            // 名额释放触发候补递补（目标线路新增占用后无需；原线路腾出座位需要）
+            promoteWaitlist(s.routeId());
+            return done;
+        });
+    }
+
+    /** 家长取消尚未完成双确认的改乘，或主动放弃候补 */
+    public ChangeRequest cancelRequest(User user, long id, String reason) {
+        requireRole(user, "PARENT", "ADMIN");
+        return store.withLock(() -> {
+            ChangeRequest cr = store.getRequest(id);
+            if (cr == null) throw new ApiException("申请不存在");
+            Student s = mustStudent(cr.studentId());
+            requireParentChild(user, s);
+            boolean cancellable = "PENDING".equals(cr.status()) || "WAITLIST".equals(cr.status())
+                    || ("APPROVED".equals(cr.status()) && "CHANGE_BUS".equals(cr.type())
+                        && cr.parentAckAt() == null);
+            if (!cancellable) {
+                throw new ApiException("申请当前状态为「" + requestStatusName(cr.status())
+                        + "」，不能取消；已完成双确认的改乘如需撤销请联系校车管理员");
+            }
+            String target = "CHANGE_BUS".equals(cr.type()) ? cr.targetRouteId() : null;
+            ChangeRequest done = copyRequest(cr, "CANCELED", false,
+                    user.username(), now(), reason == null || reason.isBlank() ? "家长主动取消" : reason,
+                    cr.attendantAckAt(), cr.parentAckAt());
+            store.saveRequest(done);
+            notif.broadcast("REQ:" + id + ":CANCEL", id, partiesOf(s,
+                    target == null ? s.routeId() : target),
+                    "申请已取消：" + s.name() + " " + typeName(cr.type()),
+                    "家长取消了该申请" + (reason == null || reason.isBlank() ? "" : "：" + reason)
+                            + "，孩子按原线路乘车。");
+            if (target != null) promoteWaitlist(target);
+            return done;
+        });
+    }
+
+    /** 候补自动递补：目标线路有名额时，按候补顺序把最早的申请转 PENDING 通知安全员确认 */
+    private void promoteWaitlist(String targetRouteId) {
+        List<ChangeRequest> queue = store.listRequests().stream()
+                .filter(x -> "WAITLIST".equals(x.status()) && "CHANGE_BUS".equals(x.type())
+                        && targetRouteId.equals(x.targetRouteId()))
+                .sorted(Comparator.comparing(ChangeRequest::id))
+                .toList();
+        for (ChangeRequest wl : queue) {
+            Student s = store.getStudent(wl.studentId());
+            if (s == null) continue;
+            BusChangeEval e = evaluateBusChange(s.routeId(), targetRouteId, wl.targetStop(), wl.id());
+            if (!e.hardOk) break; // 队首都放不下，后面更放不下
+            ChangeRequest back = copyRequest(wl, "PENDING", false,
+                    "SYSTEM", now(), "候补名额释放，自动递补请安全员确认", null, null);
+            store.saveRequest(back);
+            Vehicle tv = vehicleOfRoute(targetRouteId);
+            LinkedHashSet<String> parties = new LinkedHashSet<>();
+            parties.add(wl.parentUsername());
+            if (tv != null) { parties.add(tv.attendantUsername()); parties.add(tv.driverUsername()); }
+            parties.add(teacherOfClass(s.classId()));
+            parties.addAll(admins());
+            notif.broadcast("REQ:" + wl.id() + ":PROMOTE", null, parties,
+                    "候补递补：" + s.name() + " 改乘" + mustRoute(targetRouteId).name(),
+                    "目标线路已腾出名额，候补申请自动转为待确认，请随车安全员核对座位/同站点/绕行后确认。");
+        }
     }
 
     private void applyApprovedRequest(Student s, ChangeRequest cr) {
@@ -443,6 +708,39 @@ public class SchoolBusService {
 
     public List<ChangeRequest> requests() {
         return store.listRequests();
+    }
+
+    public String requestStatusName(String st) {
+        return switch (st) {
+            case "PENDING" -> "待安全员确认";
+            case "WAITLIST" -> "候补中";
+            case "APPROVED" -> "已通过";
+            case "REJECTED" -> "已驳回";
+            case "CANCELED" -> "已放弃/取消";
+            default -> st;
+        };
+    }
+
+    /** 司机端名单：只能查看本人车辆所跑线路的早晨/放学名单（改乘通过后立即在此更新） */
+    public Map<String, Object> driverRoster(User driver) {
+        requireRole(driver, "DRIVER", "ADMIN");
+        List<Vehicle> vehicles = store.listVehicles().stream()
+                .filter(v -> "ADMIN".equals(driver.role()) || driver.scopeIds().contains(v.id()))
+                .toList();
+        if (vehicles.isEmpty()) throw new ApiException("当前账号下没有值班车辆");
+        List<Map<String, Object>> routes = new ArrayList<>();
+        for (Vehicle v : vehicles) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("vehicle", v);
+            m.put("route", mustRoute(v.routeId()));
+            m.put("morning", buildMorningRoster(v.routeId()));
+            m.put("afternoon", buildAfternoonRoster(v.routeId()));
+            routes.add(m);
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("date", today());
+        resp.put("routes", routes);
+        return resp;
     }
 
     private String requestDigest(ChangeRequest cr) {
@@ -517,11 +815,28 @@ public class SchoolBusService {
     // ================= 早晨站点点名 =================
 
     public List<Map<String, Object>> morningRoster(User viewer, String routeId) {
-        requireRole(viewer, "ATTENDANT", "ADMIN");
-        mustRoute(routeId);
-        if ("ATTENDANT".equals(viewer.role()) && !viewer.scopeIds().contains(routeId)) {
-            throw new ForbiddenException("越权：只能查看您所属线路的早晨点名册");
+        requireRosterViewAccess(viewer, routeId);
+        return buildMorningRoster(routeId);
+    }
+
+    private void requireRosterViewAccess(User viewer, String routeId) {
+        requireRole(viewer, "ATTENDANT", "DRIVER", "ADMIN");
+        if ("ADMIN".equals(viewer.role())) return;
+        if ("ATTENDANT".equals(viewer.role())) {
+            if (!viewer.scopeIds().contains(routeId)) {
+                throw new ForbiddenException("越权：只能查看您所属线路的名单");
+            }
+            return;
         }
+        // 司机只能查看本人车辆所跑线路
+        Vehicle v = vehicleOfRoute(routeId);
+        if (v == null || !viewer.username().equals(v.driverUsername())) {
+            throw new ForbiddenException("越权：该名单不属于您驾驶的车辆");
+        }
+    }
+
+    private List<Map<String, Object>> buildMorningRoster(String routeId) {
+        mustRoute(routeId);
         List<Map<String, Object>> rows = new ArrayList<>();
         for (RideStatus r : store.listRides(today())) {
             if (!ridingToday(r) || !effectiveRoute(r).equals(routeId)) continue;
@@ -681,11 +996,12 @@ public class SchoolBusService {
     // ================= 放学乘车名单 =================
 
     public Map<String, Object> afternoonRoster(User viewer, String routeId) {
-        requireRole(viewer, "ATTENDANT", "ADMIN");
+        requireRosterViewAccess(viewer, routeId);
+        return buildAfternoonRoster(routeId);
+    }
+
+    private Map<String, Object> buildAfternoonRoster(String routeId) {
         mustRoute(routeId);
-        if ("ATTENDANT".equals(viewer.role()) && !viewer.scopeIds().contains(routeId)) {
-            throw new ForbiddenException("越权：只能查看您所属线路的放学名单");
-        }
         List<Map<String, Object>> riders = new ArrayList<>();
         List<Map<String, Object>> excluded = new ArrayList<>();
         for (RideStatus r : store.listRides(today())) {

@@ -81,6 +81,9 @@ public class ApiController {
         d.put("myNotificationsUnacked",
                 store.listNotificationsByUser(u.username()).stream().filter(n -> !n.ack()).count());
         d.put("facts", svc.dailyFacts());
+        if ("DRIVER".equals(u.role()) || "ADMIN".equals(u.role())) {
+            d.put("driverRoster", svc.driverRoster(u));
+        }
         if ("ADMIN".equals(u.role())) {
             d.put("archives", svc.archives(u, null));
             d.put("review", svc.hotspotReview(u, null));
@@ -102,6 +105,19 @@ public class ApiController {
     public Map<String, Object> review(HttpServletRequest req, @PathVariable long id,
                                       @RequestBody Map<String, Object> body) {
         return ok(svc.reviewRequest(me(req), id, bool(body, "approve"), str(body, "note")));
+    }
+
+    /** 家长确认知悉改乘（双确认之二），确认后原/目标线路名单立即同步 */
+    @PostMapping("/requests/{id}/parent-ack")
+    public Map<String, Object> parentAck(HttpServletRequest req, @PathVariable long id) {
+        return ok(svc.parentAckRequest(me(req), id));
+    }
+
+    /** 家长放弃候补 / 取消尚未完成双确认的申请 */
+    @PostMapping("/requests/{id}/cancel")
+    public Map<String, Object> cancel(HttpServletRequest req, @PathVariable long id,
+                                      @RequestBody(required = false) Map<String, Object> body) {
+        return ok(svc.cancelRequest(me(req), id, body == null ? "" : str(body, "reason")));
     }
 
     // ---------- 点名 / 名单 ----------
@@ -137,6 +153,12 @@ public class ApiController {
     public Map<String, Object> vehicleStatus(HttpServletRequest req, @RequestBody Map<String, Object> body) {
         return ok(svc.updateVehicle(me(req), str(body, "vehicleId"), str(body, "status"),
                 str(body, "locationText"), integer(body, "delayMinutes")));
+    }
+
+    /** 司机端查看本人车辆的早晨/放学名单（改乘通过后立即同步） */
+    @GetMapping("/driver/roster")
+    public Map<String, Object> driverRoster(HttpServletRequest req) {
+        return ok(svc.driverRoster(me(req)));
     }
 
     // ---------- 家长备注 / 家长确认 ----------

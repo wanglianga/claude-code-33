@@ -138,6 +138,7 @@ const CHANGE_NAME={NONE:'默认',LEAVE:'请假',CHANGE_BUS:'临时改乘',CHANGE
 const M_NAME={PLANNED:'待乘',BOARDED:'已上车',ABSENT_NO_SHOW:'未到',LATE:'迟到',TEMP_BOARDED:'临时上车',LEAVE:'请假',
   ONBOARD:'已上车',DELIVERED:'已送达',NOT_BOARDED:'未上车',NO_PICKUP:'无人接(看护中)',WRONG_BUS:'上错车'};
 const INC_NAME={NOT_BOARDED:'未上车',WRONG_BUS:'上错车',NO_PICKUP:'下车点无人接',BUS_DELAY:'车辆延误',PICKUP_CHANGE:'临时变更接送人'};
+const REQ_STATUS={PENDING:'待安全员确认',WAITLIST:'候补中',APPROVED:'已通过',REJECTED:'已驳回',CANCELED:'已放弃/取消'};
 const ACCOUNTS=[
  ['admin','admin123','周校长 · 校车管理员'],['anyi','att123','安一路 · 一号线安全员'],['liantai','att123','廉泰 · 二号线安全员'],
  ['dli','driver123','李建国 · 一号线司机'],['wangshifu','driver123','王建国 · 二号线司机'],
@@ -148,7 +149,7 @@ let S=null; // 服务端引导数据
 const TABS={
   PARENT:['child','我的孩子','req','我的申请','notif','通知回执'],
   ATTENDANT:['pend','待确认申请','am','早晨点名','pm','放学点名','notif','通知回执'],
-  DRIVER:['bus','车辆与位置','notif','通知回执'],
+  DRIVER:['bus','车辆与位置','roster','我的乘车名单','notif','通知回执'],
   TEACHER:['class','班级乘车','notif','通知回执'],
   ADMIN:['facts','统一乘车事实','pend','申请审批','inc','异常事件','receipt','通知回执核对','archive','乘车档案','review','高发站点复盘']
 };
@@ -180,7 +181,7 @@ function mTag(st){
   return `<span class="tag ${map[st]||'t-gray'}">${M_NAME[st]||st}</span>`;
 }
 function incTag(t){const map={NOT_BOARDED:'t-red',WRONG_BUS:'t-red',NO_PICKUP:'t-red',BUS_DELAY:'t-amber',PICKUP_CHANGE:'t-purple'};return `<span class="tag ${map[t]}">${INC_NAME[t]||t}</span>`;}
-function reqStatusTag(st){return st==='APPROVED'?'<span class="tag t-green">已通过</span>':st==='REJECTED'?'<span class="tag t-red">已驳回</span>':'<span class="tag t-amber">待安全员确认</span>';}
+function reqStatusTag(st){return st==='APPROVED'?'<span class="tag t-green">已通过</span>':st==='REJECTED'?'<span class="tag t-red">已驳回</span>':st==='WAITLIST'?'<span class="tag t-purple">候补中</span>':st==='CANCELED'?'<span class="tag t-gray">已放弃/取消</span>':'<span class="tag t-amber">待安全员确认</span>';}
 
 // ---------- 登录 ----------
 function renderAccounts(){
@@ -222,7 +223,7 @@ function renderAll(){
   const un=S.notifications.filter(n=>!n.ack).length;
   $('notif-dot').style.display=un?'inline-block':'none';$('notif-dot').textContent=un;
   renderNotifs();
-  const fn={child:pChild,req:pReq,notif:pNotif,pend:pPend,am:pMorning,pm:pAfternoon,bus:pBus,class:pClass,facts:pFacts,inc:pIncidents,receipt:pReceipt,archive:pArchive,review:pReview};
+  const fn={child:pChild,req:pReq,notif:pNotif,pend:pPend,am:pMorning,pm:pAfternoon,bus:pBus,roster:pDriverRoster,class:pClass,facts:pFacts,inc:pIncidents,receipt:pReceipt,archive:pArchive,review:pReview};
   $('panel').innerHTML=(fn[currentTab]||(()=>''))();
 }
 
@@ -283,9 +284,10 @@ function onReqType(sid){
   let h='';
   if(t==='LEAVE'){h=`<div class="row"><label>请假原因</label><input id="f-reason" style="width:420px" placeholder="必填，如：发烧就医"></div>`;}
   else if(t==='CHANGE_BUS'){
-    h=`<div class="row"><label>目标线路</label><select id="f-route" onchange="fillStops('f-route','f-stop')">${otherRoutes.map(x=>`<option value="${x.id}">${esc(x.name)}（容量${x.capacity}）</option>`).join('')}</select>
+    h=`<div class="row"><label>目标线路</label><select id="f-route" onchange="fillStops('f-route','f-stop')">${otherRoutes.map(x=>`<option value="${x.id}">${esc(x.name)}（容量${x.capacity}，约${x.estMinutes||'-'}分钟）</option>`).join('')}</select>
         <label>目标站点</label><select id="f-stop"></select></div>
-        <div class="row"><label>原因</label><input id="f-reason" style="width:360px" placeholder="如：家长下班改走翠湖方向"></div>`;
+        <div class="row"><label>原因</label><input id="f-reason" style="width:360px" placeholder="如：家长下班改走翠湖方向"></div>
+        <div class="row"><label></label><label class="small" style="min-width:auto"><input type="checkbox" id="f-waitlist" style="min-width:auto"> 容量/座位不足时加入候补，有名额自动递补</label></div>`;
     setTimeout(()=>fillStops('f-route','f-stop'),0);
   }
   else if(t==='CHANGE_STOP'){
@@ -306,12 +308,21 @@ function fillStops(routeSel,stopSel){
 async function submitReq(sid){
   const type=$('rtype').value;
   const body={studentId:sid,type,reason:$('f-reason')?.value||'',targetRouteId:$('f-route')?.value||'',
-    targetStop:$('f-stop')?.value||'',alternatePickupPerson:$('f-alt')?.value||''};
+    targetStop:$('f-stop')?.value||'',alternatePickupPerson:$('f-alt')?.value||'',
+    waitlist:$('f-waitlist')?.checked?'true':'false'};
   try{
     const r=await act('/requests',body);
-    if(r.status==='REJECTED'){toast('系统自动驳回：'+r.reviewNote,'err');}
+    if(r.status==='CANCELED'){toast('容量不足，已放弃改乘；如需候补请勾选后重新提交','err');}
+    else if(r.status==='WAITLIST'){toast('已加入候补队列，释放名额后自动递补','ok');}
     else{toast('已提交，等待随车安全员确认','ok');}
   }catch(e){}
+}
+async function parentAckReq(id){
+  try{await act('/requests/'+id+'/parent-ack',{});toast('已确认知悉，原/目标线路名单已同步给司机与安全员','ok');}catch(e){}
+}
+async function cancelReq(id,label){
+  await act('/requests/'+id+'/cancel',{reason:'家长在手机端'+label});
+  toast(label+'成功','ok');
 }
 async function pickupChange(sid){
   const d=await promptModal('临时变更接送人',
@@ -323,47 +334,68 @@ async function pickupChange(sid){
 }
 
 // ---------- 我的申请 ----------
+function checkCell(txt){return txt==='不涉及'?'<span class="muted small">—</span>':`<div class="small ${/不足|超限/.test(txt)?'t-red':'t-green'}">${esc(txt)}</div>`;}
 function pReq(){
   const list=S.user.role==='PARENT'?S.requests.filter(r=>r.parentUsername===S.user.username):S.requests;
-  return `<div class="card"><h3>📝 申请记录（容量 → 座位 → 校规 → 安全员确认）</h3>
-    <table><tr><th>#</th><th>学生</th><th>类型</th><th>详情/原因</th><th>线路容量校验</th><th>车辆座位校验</th><th>学校规则</th><th>状态</th><th>确认人/时间</th></tr>
-    ${list.map(r=>{const s=student(r.studentId);return `<tr>
+  return `<div class="card"><h3>📝 申请记录（座位 → 同站点 → 绕行时间 → 校规 → 安全员确认 → 家长确认）</h3>
+    <table><tr><th>#</th><th>学生</th><th>类型</th><th>详情/原因</th><th>容量</th><th>车辆座位</th><th>同站点</th><th>绕行时间</th><th>校规</th><th>状态/双确认</th><th>操作</th></tr>
+    ${list.map(r=>{const s=student(r.studentId);
+      const dual=r.type==='CHANGE_BUS'?`<div class="small" style="margin-top:3px">安全员：${r.attendantAckAt?'<span class="t-green">✔ 已确认</span>':'<span class="muted">待确认</span>'}<br>家长：${r.parentAckAt?'<span class="t-green">✔ 已确认</span>':'<span class="muted">待确认</span>'}</div>`:'';
+      let ops='—';
+      if(S.user.role==='PARENT'&&r.parentUsername===S.user.username){
+        if(r.type==='CHANGE_BUS'&&r.status==='APPROVED'&&r.attendantAckAt&&!r.parentAckAt){
+          ops=`<button class="btn ok sm" onclick="parentAckReq(${r.id})">✔ 确认知悉改乘（名单同步）</button>`;
+        } else if(r.status==='WAITLIST'){
+          ops=`<button class="btn ghost sm" onclick="cancelReq(${r.id},'放弃候补')">放弃候补</button>`;
+        } else if(r.status==='PENDING'){
+          ops=`<button class="btn ghost sm" onclick="cancelReq(${r.id},'取消申请')">取消</button>`;
+        }
+      }
+      return `<tr>
       <td>${r.id}</td><td>${esc(s?.name)}<div class="small muted">${esc(s?.className)}</div></td>
       <td>${CHANGE_NAME[r.type]}</td>
       <td class="small">${esc((r.targetRouteId?routeName(r.targetRouteId)+' / ':'')+(r.targetStop||'')+(r.alternatePickupPerson?'代接:'+r.alternatePickupPerson:'')+(r.reason?'｜'+r.reason:''))}</td>
-      <td class="small ${r.capacityCheck.includes('不足')?'t-red':''}">${esc(r.capacityCheck)}</td>
-      <td class="small ${r.seatCheck.includes('不足')?'t-red':''}">${esc(r.seatCheck)}</td>
+      <td>${checkCell(r.capacityCheck)}</td>
+      <td>${checkCell(r.seatCheck)}</td>
+      <td>${checkCell(r.stopCheck)}</td>
+      <td>${checkCell(r.detourCheck)}</td>
       <td class="small">${esc(r.ruleCheck)}</td>
-      <td>${reqStatusTag(r)}</td>
-      <td class="small">${r.reviewedBy?esc(r.reviewedBy)+' '+r.reviewedAt.slice(5,16):'—'}${r.reviewNote?'<div class="t-red">'+esc(r.reviewNote)+'</div>':''}</td>
-    </tr>`;}).join('')||'<tr><td colspan="9" class="muted">暂无申请</td></tr>'}</table></div>`;
+      <td>${reqStatusTag(r)}${dual}${r.reviewNote?'<div class="small t-red">'+esc(r.reviewNote)+'</div>':''}</td>
+      <td class="btns">${ops}</td>
+    </tr>`;}).join('')||'<tr><td colspan="11" class="muted">暂无申请</td></tr>'}</table></div>`;
 }
 
 // ================= 安全员 =================
 function myRouteIds(){return S.user.scopeIds.filter(x=>x.startsWith('R'));}
 function pPend(){
-  const can=S.user.role==='ADMIN'||S.user.role==='ATTENDANT';
-  const list=S.requests.filter(r=>S.user.role==='ADMIN'||can)
-    .filter(r=>S.user.role==='ADMIN'||!r.targetRouteId||myRouteIds().includes(r.targetRouteId)||myRouteIds().includes(student(r.studentId)?.routeId))
-    .filter(r=>r.status==='PENDING'||S.user.role==='ADMIN');
-  return `<div class="card"><h3>✔ 待随车安全员确认的申请</h3>
-    <table><tr><th>#</th><th>学生</th><th>类型</th><th>容量/座位/校规</th><th>提交</th><th>状态</th><th>操作</th></tr>
+  const list=S.requests.filter(r=>{
+      if(S.user.role==='ADMIN')return true;
+      if(r.status!=='PENDING'&&r.status!=='WAITLIST')return false;
+      const scopeRoute=r.type==='CHANGE_BUS'?r.targetRouteId:student(r.studentId)?.routeId;
+      return myRouteIds().includes(scopeRoute);
+    });
+  return `<div class="card"><h3>✔ 待随车安全员确认的申请（候补队列单独标注）</h3>
+    <table><tr><th>#</th><th>学生</th><th>类型</th><th>容量/座位/同站/绕行/校规</th><th>提交</th><th>状态</th><th>双确认</th><th>操作</th></tr>
     ${list.map(r=>{const s=student(r.studentId);return `<tr>
-      <td>${r.id}</td><td>${esc(s?.name)} ${s?.specialCare?'<span class="care">♿</span>':''}<div class="small muted">${esc(s?.className)}｜${esc(routeName(r.targetRouteId||s.routeId))}</div></td>
+      <td>${r.id}${r.waitlist?'<div class="tag t-purple">候补</div>':''}</td>
+      <td>${esc(s?.name)} ${s?.specialCare?'<span class="care">♿</span>':''}<div class="small muted">${esc(s?.className)}｜${esc(routeName(r.targetRouteId||s.routeId))}</div></td>
       <td>${CHANGE_NAME[r.type]}</td>
-      <td class="small">${esc(r.capacityCheck)}<br>${esc(r.seatCheck)}<br>${esc(r.ruleCheck)}</td>
+      <td class="small">${checkCell(r.capacityCheck)}${checkCell(r.seatCheck)}${checkCell(r.stopCheck)}${checkCell(r.detourCheck)}<div class="small">${esc(r.ruleCheck)}</div></td>
       <td class="small muted">${esc(r.parentUsername)}<br>${r.createdAt.slice(5,16)}</td>
       <td>${reqStatusTag(r)}</td>
+      <td class="small">安全员：${r.attendantAckAt?'✔':'待'}<br>家长：${r.parentAckAt?'✔':'待'}</td>
       <td class="btns">${r.status==='PENDING'?`
         <button class="btn ok sm" onclick="reviewReq(${r.id},true)">确认通过</button>
-        <button class="btn danger sm" onclick="reviewReq(${r.id},false)">驳回</button>`:'—'}</td>
-    </tr>`;}).join('')||'<tr><td colspan="7" class="muted">暂无待确认申请</td></tr>'}</table></div>`;
+        <button class="btn danger sm" onclick="reviewReq(${r.id},false)">驳回</button>`:'<span class="muted small">等待名额</span>'}</td>
+    </tr>`;}).join('')||'<tr><td colspan="8" class="muted">暂无待确认申请</td></tr>'}</table></div>`;
 }
 async function reviewReq(id,approve){
   let note='';
   if(!approve){const d=await promptModal('驳回理由','<textarea id="m-0" placeholder="请填写驳回原因"></textarea>');if(!d)return;note=d[0];}
-  await act('/requests/'+id+'/review',{approve,note});
-  toast(approve?'已确认通过，五方已同步':'已驳回','ok');
+  const r=await act('/requests/'+id+'/review',{approve,note});
+  if(r&&r.status==='WAITLIST'){toast('确认时名额已满，已自动转候补','err');}
+  else if(approve&&r&&r.parentAckAt===null&&r.attendantAckAt){toast('安全员已确认；等待家长手机端确认后名单才同步','ok');}
+  else toast(approve?'已确认通过，相关方已同步':'已驳回','ok');
 }
 function routeSelect(id){return `<select id="${id}">${myRouteIds().concat(S.user.role==='ADMIN'?S.routes.map(r=>r.id):[]).filter((v,i,a)=>a.indexOf(v)===i).map(rid=>`<option value="${rid}">${esc(routeName(rid))}</option>`).join('')}</select>`;}
 function pMorning(){
@@ -464,6 +496,32 @@ function pBus(){
 async function veh(vid,st){
   try{const v=await act('/vehicle/status',{vehicleId:vid,status:st,locationText:$('loc-'+vid)?.value||'',delayMinutes:Number($('delay-'+vid)?.value||10)});
   if(st==='DELAYED'){const inc=S.incidents.find(i=>i.vehicleId===vid&&i.status==='OPEN'&&i.type==='BUS_DELAY');toast('延误已上报，线路异常事件已开启/更新','err');}else toast('车辆状态已同步全平台','ok');}catch(e){}
+}
+
+// 司机端乘车名单（改乘双确认完成后立即变化）
+function pDriverRoster(){
+  const dr=S.driverRoster;
+  if(!dr)return '<div class="card muted">无名单数据</div>';
+  return `<div class="card"><h3>📋 我的乘车名单（随改乘双确认即时同步，请勿按旧通知接学生）</h3>
+  <div class="small muted" style="margin-bottom:10px">数据日期 ${dr.date}，页面每 12 秒自动刷新</div></div>`+
+  dr.routes.map(rt=>{
+    const v=rt.vehicle,route=rt.route;
+    const morning=rt.morning,aft=rt.afternoon;
+    return `<div class="card">
+      <h3>🚍 ${esc(v.plate)} · ${esc(route.name)} <span class="tag t-blue">早 ${morning.length} 人 / 晚 ${aft.riders.length} 人</span>
+        <span class="tag ${v.status==='DELAYED'?'t-red':'t-green'}">${v.status==='DELAYED'?'延误'+v.delayMinutes+'分':'车辆正常'}</span></h3>
+      <div class="grid g2">
+        <div><b class="small">🌅 早晨上车站点（${morning.length}人）</b>
+          <table><tr><th>站点</th><th>学生</th><th>状态</th></tr>
+          ${morning.map(x=>`<tr><td>${esc(x.stop)}</td><td>${esc(x.studentName)} ${x.specialCare?'<span class="care">♿</span>':''}<div class="small muted">${esc(x.ride.parentNote)||''}</div></td><td>${mTag(x.ride.morningStatus)}</td></tr>`).join('')||'<tr><td colspan="3" class="muted">无</td></tr>'}</table>
+        </div>
+        <div><b class="small">🏫 放学下车站点（${aft.riders.length}人）</b>
+          <table><tr><th>站点</th><th>学生/接娃人</th><th>状态</th></tr>
+          ${aft.riders.map(x=>`<tr><td>${esc(x.stop)}</td><td>${esc(x.studentName)}<div class="small muted">${esc(x.pickupPerson)}</div></td><td>${mTag(x.ride.afternoonStatus)}</td></tr>`).join('')||'<tr><td colspan="3" class="muted">无</td></tr>'}</table>
+          ${aft.excluded.length?`<div class="small muted" style="margin-top:6px">今日不乘：${aft.excluded.map(x=>esc(x.studentName)+'('+x.excludeReason+')').join('、')}</div>`:''}
+        </div>
+      </div></div>`;
+  }).join('');
 }
 
 // ================= 班主任 =================
@@ -664,6 +722,10 @@ setInterval(async()=>{
     $('notif-dot').style.display=un?'inline-block':'none';$('notif-dot').textContent=un;
     renderNotifs();
     if(currentTab==='am'||currentTab==='pm'){const d=await api('/facts');S.facts=d;fillRosters();}
+    if(S.user.role==='DRIVER'||S.user.role==='ADMIN'){
+      try{const dr=await api('/driver/roster');S.driverRoster=dr;
+        if(currentTab==='roster')renderAll();}catch(e2){}
+    }
   }catch(e){}
 },12000);
 // renderAll 后注入名单（select 在 panel 重绘后保留默认选中项）
