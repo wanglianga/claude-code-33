@@ -181,7 +181,19 @@ function mTag(st){
   return `<span class="tag ${map[st]||'t-gray'}">${M_NAME[st]||st}</span>`;
 }
 function incTag(t){const map={NOT_BOARDED:'t-red',WRONG_BUS:'t-red',NO_PICKUP:'t-red',BUS_DELAY:'t-amber',PICKUP_CHANGE:'t-purple'};return `<span class="tag ${map[t]}">${INC_NAME[t]||t}</span>`;}
-function reqStatusTag(st){return st==='APPROVED'?'<span class="tag t-green">已通过</span>':st==='REJECTED'?'<span class="tag t-red">已驳回</span>':st==='WAITLIST'?'<span class="tag t-purple">候补中</span>':st==='CANCELED'?'<span class="tag t-gray">已放弃/取消</span>':'<span class="tag t-amber">待安全员确认</span>';}
+/* 家长/安全员端申请状态展示（入参为整个申请对象，用于区分改乘双确认子状态） */
+function reqStateTag(r){
+  if(r.type==='CHANGE_BUS'&&r.status==='APPROVED'){
+    if(r.parentAckAt) return '<span class="tag t-green">✔ 改乘已生效</span><div class="small t-green" style="margin-top:3px">安全员与家长双确认完成，双方名单已同步</div>';
+    if(r.attendantAckAt) return '<span class="tag t-amber">安全员已确认 · 待家长确认</span><div class="small t-amber" style="margin-top:3px">请在下方点击「确认知悉改乘」，名单才会变更</div>';
+  }
+  if(r.type==='CHANGE_BUS'&&r.status==='PENDING') return '<span class="tag t-amber">待安全员确认</span>';
+  if(r.status==='CANCELED') return '<span class="tag t-gray">已放弃/取消</span><div class="small muted" style="margin-top:3px">孩子仍按原线路乘车，无需操作</div>';
+  if(r.status==='WAITLIST') return '<span class="tag t-purple">候补中</span><div class="small muted" style="margin-top:3px">释放名额后自动递补并通知</div>';
+  if(r.status==='REJECTED') return '<span class="tag t-red">已驳回</span>';
+  if(r.status==='APPROVED') return '<span class="tag t-green">已通过 · 已生效</span>';
+  return '<span class="tag t-amber">待安全员确认</span>';
+}
 
 // ---------- 登录 ----------
 function renderAccounts(){
@@ -340,7 +352,8 @@ function pReq(){
   return `<div class="card"><h3>📝 申请记录（座位 → 同站点 → 绕行时间 → 校规 → 安全员确认 → 家长确认）</h3>
     <table><tr><th>#</th><th>学生</th><th>类型</th><th>详情/原因</th><th>容量</th><th>车辆座位</th><th>同站点</th><th>绕行时间</th><th>校规</th><th>状态/双确认</th><th>操作</th></tr>
     ${list.map(r=>{const s=student(r.studentId);
-      const dual=r.type==='CHANGE_BUS'?`<div class="small" style="margin-top:3px">安全员：${r.attendantAckAt?'<span class="t-green">✔ 已确认</span>':'<span class="muted">待确认</span>'}<br>家长：${r.parentAckAt?'<span class="t-green">✔ 已确认</span>':'<span class="muted">待确认</span>'}</div>`:'';
+      const showDual=r.type==='CHANGE_BUS'&&(r.status==='PENDING'||r.status==='APPROVED');
+      const dual=showDual?`<div class="small" style="margin-top:3px">安全员：${r.attendantAckAt?'<span class="t-green">✔ 已确认</span>':'<span class="muted">待确认</span>'}<br>家长：${r.parentAckAt?'<span class="t-green">✔ 已确认</span>':'<span class="muted">待确认</span>'}</div>`:'';
       let ops='—';
       if(S.user.role==='PARENT'&&r.parentUsername===S.user.username){
         if(r.type==='CHANGE_BUS'&&r.status==='APPROVED'&&r.attendantAckAt&&!r.parentAckAt){
@@ -360,7 +373,7 @@ function pReq(){
       <td>${checkCell(r.stopCheck)}</td>
       <td>${checkCell(r.detourCheck)}</td>
       <td class="small">${esc(r.ruleCheck)}</td>
-      <td>${reqStatusTag(r)}${dual}${r.reviewNote?'<div class="small t-red">'+esc(r.reviewNote)+'</div>':''}</td>
+      <td>${reqStateTag(r)}${dual}${r.reviewNote?'<div class="small '+(r.status==='REJECTED'?'t-red':'muted')+'" style="margin-top:3px">'+esc(r.reviewNote)+'</div>':''}</td>
       <td class="btns">${ops}</td>
     </tr>`;}).join('')||'<tr><td colspan="11" class="muted">暂无申请</td></tr>'}</table></div>`;
 }
@@ -382,7 +395,7 @@ function pPend(){
       <td>${CHANGE_NAME[r.type]}</td>
       <td class="small">${checkCell(r.capacityCheck)}${checkCell(r.seatCheck)}${checkCell(r.stopCheck)}${checkCell(r.detourCheck)}<div class="small">${esc(r.ruleCheck)}</div></td>
       <td class="small muted">${esc(r.parentUsername)}<br>${r.createdAt.slice(5,16)}</td>
-      <td>${reqStatusTag(r)}</td>
+      <td>${reqStateTag(r)}</td>
       <td class="small">安全员：${r.attendantAckAt?'✔':'待'}<br>家长：${r.parentAckAt?'✔':'待'}</td>
       <td class="btns">${r.status==='PENDING'?`
         <button class="btn ok sm" onclick="reviewReq(${r.id},true)">确认通过</button>
