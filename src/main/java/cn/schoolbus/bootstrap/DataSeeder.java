@@ -59,19 +59,20 @@ public class DataSeeder {
 
         // ---------- 车辆 ----------
         store.saveVehicle(new Vehicle("V1", "京A·1001", 20, "R1", "dli", "anyi",
-                "ON_TIME", "学校停车场", 0, now));
+                "ON_TIME", "学校停车场", "实验学校", 0, now));
         store.saveVehicle(new Vehicle("V2", "京A·2002", 3, "R2", "wangshifu", "liantai",
-                "ON_TIME", "学校停车场", 0, now));
+                "ON_TIME", "学校停车场", "实验学校", 0, now));
         store.saveVehicle(new Vehicle("V3", "京A·3003", 10, "R3", "dsan", "ansan",
-                "ON_TIME", "学校停车场", 0, now));
+                "ON_TIME", "学校停车场", "实验学校", 0, now));
 
         // ---------- 线路 ----------
         // 参数：容量 / 单站点人数上限 / 全程预计分钟（用于绕行时间校验）
+        // 一号线与二号线有两个共同安全站点「市民中心」「实验学校」，用于验证上错车安全交接点随车辆位置变化
         store.saveRoute(new Route("R1", "一号线（滨江线）", "BOTH", "V1",
                 List.of("阳光花园东门", "滨江路站", "市民中心", "实验学校"), 20, 8, 35));
         // 二号线满员：3 名默认乘客 / 容量 3 / 车辆 3 座；翠湖天地 2 人（站容满），用于容量/座位/同站校验与候补递补
         store.saveRoute(new Route("R2", "二号线（翠湖线）", "BOTH", "V2",
-                List.of("翠湖天地", "科技园北门", "实验学校"), 3, 2, 45));
+                List.of("翠湖天地", "科技园北门", "市民中心", "实验学校"), 3, 2, 45));
         // 三号线远郊：座位充足但全程 70 分钟，自一号线改乘绕行 +35 分钟（超 +20 上限），演示绕行拦截
         store.saveRoute(new Route("R3", "三号线（大学城线）", "BOTH", "V3",
                 List.of("大学城北", "实验学校"), 10, 8, 70));

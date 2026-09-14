@@ -950,7 +950,7 @@ public class SchoolBusService {
     // ================= 车辆实时状态 =================
 
     public Vehicle updateVehicle(User driver, String vehicleId, String status,
-                                 String locationText, Integer delayMinutes) {
+                                 String locationText, String nearestStop, Integer delayMinutes) {
         if (!List.of("ON_TIME", "DELAYED", "RUNNING", "FINISHED").contains(status)) {
             throw new ApiException("车辆状态非法");
         }
@@ -959,9 +959,20 @@ public class SchoolBusService {
         requireVehicleAccess(driver, v);
         return store.withLock(() -> {
             int delay = delayMinutes == null ? v.delayMinutes() : delayMinutes;
+            Route route = mustRoute(v.routeId());
+            // 最近站点：显式传入优先，其次按定位文本匹配本线站点，最后沿用原值
+            String stop = nearestStop;
+            if ((stop == null || stop.isBlank()) && locationText != null) {
+                stop = route.stops().stream().filter(locationText::contains).findFirst()
+                        .orElse(v.nearestStop());
+            }
+            if (stop == null || stop.isBlank()) stop = v.nearestStop();
+            if (!route.stops().contains(stop)) {
+                throw new ApiException("最近站点不在本线路站点表内：" + stop);
+            }
             Vehicle u = new Vehicle(v.id(), v.plate(), v.seats(), v.routeId(), v.driverUsername(),
                     v.attendantUsername(), status, locationText == null ? v.locationText() : locationText,
-                    "DELAYED".equals(status) ? delay : 0, now());
+                    stop, "DELAYED".equals(status) ? delay : 0, now());
             store.saveVehicle(u);
 
             // 找今天该线路是否已有打开的延误事件
@@ -1240,6 +1251,14 @@ public class SchoolBusService {
         return store.withLock(() -> {
             Incident inc = incident(incidentId);
             if ("RESOLVED".equals(inc.status())) throw new ApiException("事件已关闭");
+            // 上错车事件必须完成全部处置步骤后才能关闭，杜绝未处置即结案、生成档案与次日关注
+            if ("WRONG_BUS".equals(inc.type())) {
+                int[] done = planProgress(inc);
+                if (done[0] < done[1]) {
+                    throw new ApiException("处置方案尚未完成（" + done[0] + "/" + done[1]
+                            + "），必须全部步骤完成后才能关闭事件");
+                }
+            }
             String finalRootCause = inc.rootCause();
             String finalPrevention = inc.prevention();
             if ("WRONG_BUS".equals(inc.type())) {
@@ -1508,11 +1527,11 @@ public class SchoolBusService {
         Route correctRt = mustRoute(correctRouteId);
         String destination = effectiveStop(r, true);
 
-        // 最近安全站点：两线共有站点优先（通常是学校），否则用当前车辆线路上离学校最近的终点站
+        // 最近安全交接点：随误乘车辆当前位置变化——在两线共有站点中，选择车辆前方（沿行驶方向）最近的一个；
+        // 若已无前方共有站点，则取线路终点站（学校）。
         List<String> common = new ArrayList<>(wrongRt.stops());
         common.retainAll(correctRt.stops());
-        String safeStop = common.isEmpty()
-                ? wrongRt.stops().get(wrongRt.stops().size() - 1) : common.get(0);
+        String safeStop = nearestSafeAhead(wrongRt, common, wrongV);
 
         String detectedAt = r.morningMarkedAt() != null ? r.morningMarkedAt() : now();
         String attendant = wrongV == null ? "随车安全员" : mustUser(wrongV.attendantUsername()).name();
@@ -1550,6 +1569,29 @@ public class SchoolBusService {
         }
     }
 
+    /**
+     * 安全交接点随车辆当前位置变化：沿误乘车辆行驶方向（站点表顺序），
+     * 取严格位于车辆最近站点之后的第一个两线共有站点；没有则取误乘线路终点站（学校）。
+     */
+    private String nearestSafeAhead(Route wrongRt, List<String> commonSafeStops, Vehicle wrongV) {
+        String cur = wrongV == null || wrongV.nearestStop() == null ? null : wrongV.nearestStop();
+        int curIdx = cur == null ? -1 : wrongRt.stops().indexOf(cur);
+        if (curIdx >= 0) {
+            // 车辆当前停靠站本身是两线共有安全点 → 就地交接；否则沿行驶方向找前方最近共有安全点
+            if (commonSafeStops.contains(wrongRt.stops().get(curIdx))) {
+                return wrongRt.stops().get(curIdx);
+            }
+            for (int i = curIdx + 1; i < wrongRt.stops().size(); i++) {
+                if (commonSafeStops.contains(wrongRt.stops().get(i))) {
+                    return wrongRt.stops().get(i);
+                }
+            }
+        } else if (!commonSafeStops.isEmpty()) {
+            return commonSafeStops.get(0);
+        }
+        return wrongRt.stops().get(wrongRt.stops().size() - 1);
+    }
+
     private Map<String, Object> planStep(int step, String actor, String action) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("step", step);
@@ -1580,6 +1622,14 @@ public class SchoolBusService {
             if (s != null) resp.put("suggestedRootCause", suggestRootCause(s, inc.vehicleId()));
         }
         resp.put("receipts", store.listNotificationsByIncident(incidentId));
+        if ("WRONG_BUS".equals(inc.type()) && "OPEN".equals(inc.status())) {
+            int[] pg = planProgress(inc);
+            resp.put("planDone", pg[0]);
+            resp.put("planTotal", pg[1]);
+            resp.put("resolvable", pg[0] >= pg[1] && pg[1] > 0);
+        } else {
+            resp.put("resolvable", !"OPEN".equals(inc.status()));
+        }
         String nextDay = LocalDate.parse(inc.date()).plusDays(1).toString();
         resp.put("watchedNextDay", store.listWatch(nextDay).contains(inc.studentId()));
         resp.put("nextDay", nextDay);
@@ -1669,6 +1719,22 @@ public class SchoolBusService {
         m.put("reason", reason);
         m.put("prevention", preventionForRootCause(code));
         return m;
+    }
+
+    /** 返回上错车处置方案进度：[已完成数, 总步数] */
+    @SuppressWarnings("unchecked")
+    private int[] planProgress(Incident inc) {
+        if (inc.planJson() == null) return new int[]{0, 0};
+        try {
+            Map<String, Object> plan = JSON.readValue(inc.planJson(), Map.class);
+            List<Map<String, Object>> actions = (List<Map<String, Object>>) plan.get("actions");
+            int total = actions == null ? 0 : actions.size();
+            int done = actions == null ? 0
+                    : (int) actions.stream().filter(a -> "DONE".equals(a.get("status"))).count();
+            return new int[]{done, total};
+        } catch (Exception e) {
+            return new int[]{0, 0};
+        }
     }
 
     private String normalizeRootCause(String code) {

@@ -1,6 +1,6 @@
 package cn.schoolbus.domain;
 
-/** 校车：物理座位数 seats，绑定线路与司乘人员 */
+/** 值班车辆：nearestStop 为当前定位最近的本线站点（随司机上报更新，用于上错车最近安全交接点选择） */
 public record Vehicle(
         String id,
         String plate,
@@ -8,8 +8,9 @@ public record Vehicle(
         String routeId,
         String driverUsername,
         String attendantUsername,
-        String status,          // ON_DUTY / ON_TIME / DELAYED / RUNNING / FINISHED
+        String status,
         String locationText,
+        String nearestStop,
         int delayMinutes,
         String updatedAt
 ) {

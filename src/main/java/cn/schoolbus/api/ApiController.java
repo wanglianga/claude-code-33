@@ -152,7 +152,7 @@ public class ApiController {
     @PostMapping("/vehicle/status")
     public Map<String, Object> vehicleStatus(HttpServletRequest req, @RequestBody Map<String, Object> body) {
         return ok(svc.updateVehicle(me(req), str(body, "vehicleId"), str(body, "status"),
-                str(body, "locationText"), integer(body, "delayMinutes")));
+                str(body, "locationText"), str(body, "nearestStop"), integer(body, "delayMinutes")));
     }
 
     /** 司机端查看本人车辆的早晨/放学名单（改乘通过后立即同步） */

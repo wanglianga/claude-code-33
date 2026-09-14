@@ -509,8 +509,9 @@ function pBus(){
       <div class="stat"><div class="l">随车安全员</div><b>${esc(v.attendantUsername)}</b><div class="small muted">司机 ${esc(v.driverUsername)}</div></div>
     </div>
     <div style="height:12px"></div>
-    <div class="row"><label>位置</label><input id="loc-${v.id}" value="${esc(v.locationText)}" style="width:300px">
-      <label>延误分钟</label><input id="delay-${v.id}" type="number" value="${Math.max(v.delayMinutes,10)}" style="width:90px"></div>
+    <div class="row"><label>位置</label><input id="loc-${v.id}" value="${esc(v.locationText)}" style="width:240px">
+      <label>最近站点</label><select id="stop-${v.id}">${route.stops.map(x=>`<option ${x===v.nearestStop?'selected':''}>${esc(x)}</option>`).join('')}</select>
+      <label>延误分钟</label><input id="delay-${v.id}" type="number" value="${Math.max(v.delayMinutes,10)}" style="width:80px"></div>
     <div class="btns">
       <button class="btn ok sm" onclick="veh('${v.id}','ON_TIME')">恢复准点</button>
       <button class="btn sm" onclick="veh('${v.id}','RUNNING')">开始运行</button>
@@ -520,7 +521,7 @@ function pBus(){
   }).join('');
 }
 async function veh(vid,st){
-  try{const v=await act('/vehicle/status',{vehicleId:vid,status:st,locationText:$('loc-'+vid)?.value||'',delayMinutes:Number($('delay-'+vid)?.value||10)});
+  try{const v=await act('/vehicle/status',{vehicleId:vid,status:st,locationText:$('loc-'+vid)?.value||'',nearestStop:$('stop-'+vid)?.value||'',delayMinutes:Number($('delay-'+vid)?.value||10)});
   if(st==='DELAYED'){const inc=S.incidents.find(i=>i.vehicleId===vid&&i.status==='OPEN'&&i.type==='BUS_DELAY');toast('延误已上报，线路异常事件已开启/更新','err');}else toast('车辆状态已同步全平台','ok');}catch(e){}
 }
 
@@ -649,9 +650,10 @@ async function openIncident(id){
     ${S.user.role==='ADMIN'?`
     <h3 style="margin-top:14px">关闭事件、复盘并联动次日点名</h3>
     ${isWB?renderRootCausePicker(sug):''}
+    ${isWB?`<div class="small ${d.resolvable?'t-green':'t-red'}" style="margin-bottom:8px">处置方案进度 ${d.planDone||0}/${d.planTotal||5}${d.resolvable?'，已全部完成，可关闭事件':'，必须全部步骤完成后才能关闭事件'}</div>`:''}
     <textarea id="resolution" placeholder="处理结果（通知记录、定位、点名、家长确认均将归档）"></textarea>
     <textarea id="responsibility" placeholder="责任结论，如：安全员未逐人核对，已通报；校方将在次日置顶核对该生"></textarea>
-    <div class="row" style="margin-top:8px"><button class="btn ok" onclick="resolveInc(${i.id},${isWB})">✔ 关闭事件、复盘并联动次日名单</button></div>`
+    <div class="row" style="margin-top:8px"><button class="btn ok" ${isWB&&!d.resolvable?'disabled':''} onclick="resolveInc(${i.id},${isWB})">✔ 关闭事件、复盘并联动次日名单</button></div>`
     :'<div class="muted small">事件处理中，处置进度五方实时同步；关闭与复盘由校车管理员完成。</div>'}`
     :'<div class="muted small">事件已关闭，归档可在「乘车档案」查看。</div>'}
     <div class="row" style="margin-top:14px"><button class="btn ghost" onclick="closeModal()">关闭窗口</button></div>`;
@@ -693,6 +695,10 @@ async function doPlanStep(id,step){await act('/incidents/'+id+'/plan-step',{step
 async function addAction(id){const v=$('inc-action').value;if(!v)return;await act('/incidents/'+id+'/action',{action:v});$('inc-action').value='';toast('进展已同步事件各方','ok');await openIncident(id);}
 async function nudge(id){const d=await act('/incidents/'+id+'/nudge',null);toast('已向 '+d.resent+' 位未回执方再次推送','ok');await openIncident(id);}
 async function resolveInc(id,isWB){
+  if(isWB){
+    const dd=await api('/incidents/'+id);
+    if(!dd.resolvable){toast('处置方案尚未全部完成（'+(dd.planDone||0)+'/'+dd.planTotal+'），不能关闭事件','err');return;}
+  }
   const resolution=$('resolution').value,responsibility=$('responsibility').value;
   if(!resolution||!responsibility){toast('处理结果与责任结论均为必填','err');return;}
   const rootCause=isWB?$('rootCause').value:'';
